@@ -1,0 +1,26 @@
+{
+    "method": "serverchan",
+    "enabled": true,
+    "max_stocks": 10,
+
+    "_comment_method": "推送方式: serverchan / wework / wxpusher / mp / mp-mass",
+
+    "_comment_serverchan": "=== Server酱配置 (推荐个人使用) ===",
+    "serverchan_sendkey": "SCTxxxxxxxxxxxxxxxxxxxxx",
+    "serverchan_sendkeys": [],
+
+    "_comment_wework": "=== 企业微信机器人配置 (推荐团队使用) ===",
+    "wework_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "wework_webhooks": [],
+
+    "_comment_wxpusher": "=== WxPusher配置 (多用户推送) ===",
+    "wxpusher_token": "AT_xxxxxxxxxxxxxxxxxxxxxxxx",
+    "wxpusher_uids": ["UID_xxxxxxxxxxxxxxxx"],
+
+    "_comment_mp": "=== 微信公众号配置 (需认证服务号) ===",
+    "_comment_mp_limit": "群发限制: 订阅号1次/天, 服务号4次/月, 需认证服务号才能API群发",
+    "mp_appid": "wxaaaaaaaaaaaaaaaa",
+    "mp_secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "mp_template_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "mp_openids": ["oXXXX-xxxxxxxxxxxxxxxxxxxxxxx"]
+}
