@@ -1,0 +1,101 @@
+# 溯源分析系统 P1 基础设施 (单机 Docker Compose)
+# 用法: docker compose -f src/app/traceback/docker-compose.yml up -d
+#
+# 对齐 01_phase1_design.md §2.1 P1 部署架构
+#   - PostgreSQL : 任务/证据引用/攻击链/归因/审核/checkpoint
+#   - MongoDB    : 证据元数据/时间线事件
+#   - MinIO      : 证据原始文件/报告
+#   - Redis      : Celery 消息队列 + 缓存
+#   (P1 不引入 K8s/LangGraph 自带 PG checkpointer, 见 §5.1 langgraph_checkpoints 表)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: traceback-pg
+    environment:
+      POSTGRES_USER: traceback
+      POSTGRES_PASSWORD: traceback_dev
+      POSTGRES_DB: traceback
+      TZ: Asia/Shanghai
+    ports:
+      - "55432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./data/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traceback"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: traceback-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: traceback
+      MONGO_INITDB_ROOT_PASSWORD: traceback_dev
+      MONGO_INITDB_DATABASE: traceback
+      TZ: Asia/Shanghai
+    ports:
+      - "57017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: traceback-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: traceback
+      MINIO_ROOT_PASSWORD: traceback_dev
+      TZ: Asia/Shanghai
+    ports:
+      - "59000:9000"   # S3 API
+      - "59001:9001"   # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: traceback-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "56379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 启动后自动创建 MinIO bucket (evidence-raw / reports)
+  minio-init:
+    image: minio/mc:latest
+    container_name: traceback-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 traceback traceback_dev &&
+      mc mb -p local/evidence-raw || true &&
+      mc mb -p local/reports || true &&
+      echo 'minio buckets ready'
+      "
+
+volumes:
+  pg_data:
+  mongo_data:
+  minio_data:
+  redis_data:

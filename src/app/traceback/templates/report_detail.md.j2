@@ -1,0 +1,48 @@
+{# 详报模板 - 对齐 01_phase1_design.md §4.4 #}
+# 溯源分析报告 — {{ task.task_name }}
+
+> 任务ID: {{ task.task_id }}
+> 生成时间: {{ generated_at }}
+> 事件时间: {{ task.event_start_time or "未知" }} ~ {{ task.event_end_time or "未知" }}
+
+## 一、事件概述
+
+{{ overview | default("（待 LLM 生成事件概述）") }}
+
+## 二、攻击时间线
+
+| 时间 | 事件 | 类别 | 严重程度 | 关键 |
+|------|------|------|---------|------|
+{% for ev in timeline_events %}
+| {{ ev.event_time }} | {{ ev.title }} | {{ ev.event_category }} | {{ ev.severity }} | {{ "是" if ev.is_key_event else "" }} |
+{% endfor %}
+
+**关键节点数**: {{ key_event_count }}
+
+## 三、攻击链分析
+
+- **攻击入口**: {{ attack_chain.entry_point.asset if attack_chain and attack_chain.entry_point else "未识别" }}
+{% if attack_chain and attack_chain.lateral_movements %}
+- **横向移动路径**:
+{% for lm in attack_chain.lateral_movements %}
+  - {{ lm.from_asset }} → {{ lm.to_asset }} ({{ lm.technique_label or lm.technique_id or "" }})
+{% endfor %}
+{% endif %}
+- **受影响资产**: {{ attack_chain.affected_assets | join(", ") if attack_chain else "" }}
+- **数据外传**: {{ "是" if attack_chain and attack_chain.data_exfiltration else "否" }}
+
+## 四、威胁归因
+
+{% if attribution and attribution.attributed %}
+- **威胁组织**: {{ attribution.threat_actor }}
+- **置信度**: {{ attribution.confidence_score }}
+{% else %}
+- 归因结论: 暂未归因（P1 桩, P2 实现完整归因）
+{% endif %}
+
+## 五、处置建议
+
+{{ response_suggestions | default("（待生成处置建议）") }}
+
+---
+*本报告由溯源分析系统自动生成*
