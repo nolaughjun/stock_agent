@@ -106,10 +106,10 @@ def save_report(task_id: str, content: str | bytes, fmt: str = "md") -> str:
     out_dir = MODULE_DIR / "outputs" / "reports"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{task_id}.{fmt}"
-    mode = "wb" if isinstance(content, bytes) else "w"
-    path.write_bytes(content) if isinstance(content, bytes) else path.write_text(
-        content, encoding="utf-8"
-    )
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(content, encoding="utf-8")
     return str(path)
 
 
@@ -145,7 +145,6 @@ async def get_report_from_minio(task_id: str, fmt: str) -> bytes | None:
     """从 MinIO 读取报告, 不存在返回 None"""
     from src.app.traceback.core.db import get_minio_client
 
-    from io import BytesIO
 
     key = minio_report_key(task_id, fmt)
     bucket = settings.bucket_reports

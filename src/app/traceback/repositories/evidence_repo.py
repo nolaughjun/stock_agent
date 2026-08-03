@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.traceback.core.db import get_minio_client, get_mongo_db
 from src.app.traceback.core.logging import logger
-from src.app.traceback.schemas.evidence import EvidenceMeta, EvidenceRef, ImportanceLevel
+from src.app.traceback.schemas.evidence import EvidenceMeta, ImportanceLevel
 
 # PG evidences 表反射
 _evidences_tbl = table(

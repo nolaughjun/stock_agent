@@ -121,7 +121,7 @@ async def test_graph_interrupt_and_resume():
     config = {"configurable": {"thread_id": "t-test"}}
 
     # 1. 启动, 应在 review_timeline 处 interrupt
-    state = await graph.ainvoke(
+    await graph.ainvoke(
         {"task_id": "t-test", "stage": "created"}, config=config
     )
     snapshot = await graph.aget_state(config)

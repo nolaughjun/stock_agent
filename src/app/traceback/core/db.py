@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from src.app.traceback.core.config import settings
@@ -46,9 +47,6 @@ async def get_session():
         get_pg_engine()
     async with _session_factory() as session:  # type: ignore[union-attr]
         yield session
-
-
-from contextlib import asynccontextmanager
 
 
 @asynccontextmanager

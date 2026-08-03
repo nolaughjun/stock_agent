@@ -21,7 +21,6 @@ from src.app.traceback.repositories import evidence_repo, task_repo
 from src.app.traceback.schemas.evidence import (
     CollectContext,
     EvidenceScore,
-    ImportanceLevel,
     RawEvidence,
 )
 

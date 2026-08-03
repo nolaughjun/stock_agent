@@ -10,11 +10,10 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.traceback.agents.base import AgentBase
-from src.app.traceback.core.config import settings
 from src.app.traceback.core.db import session_scope
 from src.app.traceback.core.logging import logger
 from src.app.traceback.orchestration.state import TracebackState
-from src.app.traceback.repositories import attack_chain_repo, evidence_repo
+from src.app.traceback.repositories import attack_chain_repo
 from src.app.traceback.services.mitre import validate_ttp
 
 

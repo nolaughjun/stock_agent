@@ -68,7 +68,6 @@ def test_reporter_rule_narrative():
 async def test_reporter_renders_report(monkeypatch):
     from src.app.traceback.agents import reporter as rep_mod
     from src.app.traceback.agents.reporter import Reporter
-    from src.app.traceback.services import report_service
 
     stored: dict[str, bytes] = {}
 

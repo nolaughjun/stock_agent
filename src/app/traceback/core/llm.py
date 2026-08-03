@@ -71,12 +71,10 @@ class LLMClient:
             )
         )
         last_err: Optional[Exception] = None
-        last_raw: str = ""
         for attempt in range(self.max_retries + 1):
             try:
                 resp = await self._client.ainvoke([sys_msg, HumanMessage(content=user)])
                 raw = resp.content if isinstance(resp.content, str) else str(resp.content)
-                last_raw = raw
                 parsed = _extract_json(raw)
                 return schema_model.model_validate(parsed)
             except (ValidationError, json.JSONDecodeError) as e:

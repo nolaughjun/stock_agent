@@ -1,0 +1,8 @@
+# Ruff 配置 — 溯源分析系统
+# main.py 需在 import 前注入 sys.path (项目 src/ layout 既有模式), 豁免 E402
+target-version = "py312"
+line-length = 100
+
+[lint.per-file-ignores]
+"src/app/traceback/main.py" = ["E402"]
+"src/app/*/main.py" = ["E402"]

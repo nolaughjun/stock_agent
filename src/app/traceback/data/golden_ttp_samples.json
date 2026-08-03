@@ -1,0 +1,36 @@
+{
+  "_comment": "TTP 标注黄金样本评测集 (对齐 01_phase1_design.md §11, 准确率>80%)。每个场景含证据(规则提取输入)与期望 MITRE 技术(ground truth), 评测 TimelineBuilder 规则提取 + AttackChainAgent TTP 白名单标注的端到端准确率。",
+  "samples": [
+    {
+      "scenario": "ransomware_phishing",
+      "description": "钓鱼邮件→PowerShell→C2→RDP横向→勒索加密",
+      "evidence": [
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "phishing_email_received", "ts": "2026-07-01T08:05:00Z", "src": "external", "dst": "10.0.0.5"}},
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "powershell_execution", "ts": "2026-07-01T08:12:00Z", "src": "10.0.0.5", "dst": "203.0.113.55"}},
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "c2_beacon", "ts": "2026-07-01T08:30:00Z", "src": "10.0.0.5", "dst": "203.0.113.55"}},
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "rdp_lateral", "ts": "2026-07-01T09:10:00Z", "src": "10.0.0.5", "dst": "10.0.0.6"}},
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "file_encryption", "ts": "2026-07-01T09:45:00Z", "src": "10.0.0.5"}}
+      ],
+      "expected_techniques": ["T1566.001", "T1059.001", "T1071.001", "T1021.001", "T1486"]
+    },
+    {
+      "scenario": "credential_dump_lateral",
+      "description": "凭据转储+横向移动",
+      "evidence": [
+        {"evidence_type": "log", "source": "edr", "parsed_data": {"event": "credential_dump_suspected", "ts": "2026-07-02T10:00:00Z", "host": "10.0.0.5"}},
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "rdp_lateral", "ts": "2026-07-02T10:30:00Z", "src": "10.0.0.5", "dst": "10.0.0.7"}}
+      ],
+      "expected_techniques": ["T1003.001", "T1021.001"]
+    },
+    {
+      "scenario": "noise_and_unknown",
+      "description": "含未知事件(不应产出非法技术) + 已知事件",
+      "evidence": [
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "powershell_execution", "ts": "2026-07-03T09:00:00Z", "src": "10.0.0.8", "dst": "10.0.0.9"}},
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "benind_login", "ts": "2026-07-03T09:05:00Z", "src": "10.0.0.8"}},
+        {"evidence_type": "log", "source": "siem", "parsed_data": {"event": "file_encryption", "ts": "2026-07-03T09:30:00Z", "src": "10.0.0.8"}}
+      ],
+      "expected_techniques": ["T1059.001", "T1486"]
+    }
+  ]
+}
