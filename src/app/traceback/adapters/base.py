@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from src.app.traceback.core.logging import logger
+from src.app.traceback.schemas.evidence import CollectContext, RawEvidence
 
 
 class BaseAdapter(ABC):
@@ -31,6 +32,13 @@ class BaseAdapter(ABC):
     async def close(self) -> None:
         """关闭连接"""
         ...
+
+    async def collect(self, ctx: CollectContext) -> list[RawEvidence]:
+        """统一证据收集入口 (默认空, 子类按需覆盖)。
+
+        返回 RawEvidence 列表, 由 EvidenceCollector 统一存储与评估。
+        """
+        return []
 
     async def safe_call(self, coro: Any, *, context: str = "") -> Any:
         """带降级的调用包装: 失败标记 unavailable, 不抛出, 返回 None。

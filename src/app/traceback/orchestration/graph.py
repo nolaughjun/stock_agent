@@ -19,11 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from src.app.traceback.orchestration.nodes import (
-    analyze_chain_node,
-    attribute_node,
-    build_timeline_node,
-    collect_evidence_node,
-    report_node,
+    DEFAULT_NODES,
     review_chain_node,
     review_timeline_node,
     route_after_review_chain,
@@ -32,25 +28,31 @@ from src.app.traceback.orchestration.nodes import (
 from src.app.traceback.orchestration.state import TracebackState
 
 
-def build_graph(checkpointer: Any = None):
+def build_graph(
+    checkpointer: Any = None,
+    node_overrides: dict[str, Any] | None = None,
+):
     """构建溯源分析状态图。
 
     Args:
         checkpointer: LangGraph checkpointer (MemorySaver 默认; 生产用 PG, 对齐 §5.1)
+        node_overrides: 业务节点覆盖 (测试用 stub, 审核节点固定不可覆盖)
     """
     if checkpointer is None:
         checkpointer = MemorySaver()
 
+    nodes = {**DEFAULT_NODES, **(node_overrides or {})}
+
     graph = StateGraph(TracebackState)
 
-    # 业务节点
-    graph.add_node("collect_evidence", collect_evidence_node)
-    graph.add_node("build_timeline", build_timeline_node)
+    # 业务节点 (可覆盖)
+    graph.add_node("collect_evidence", nodes["collect_evidence"])
+    graph.add_node("build_timeline", nodes["build_timeline"])
     graph.add_node("review_timeline", review_timeline_node)
-    graph.add_node("analyze_chain", analyze_chain_node)
+    graph.add_node("analyze_chain", nodes["analyze_chain"])
     graph.add_node("review_chain", review_chain_node)
-    graph.add_node("attribute", attribute_node)
-    graph.add_node("report", report_node)
+    graph.add_node("attribute", nodes["attribute"])
+    graph.add_node("report", nodes["report"])
 
     # 边
     graph.add_edge(START, "collect_evidence")

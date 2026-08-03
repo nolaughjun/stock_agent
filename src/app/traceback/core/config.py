@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     evidence_collect_timeout: int = 60          # 单适配器超时(秒)
     max_log_per_task: int = 100_000             # P1 限 10 万日志 (TR-003 对策)
     llm_batch_size: int = 50                    # 证据分批送 LLM
+    # 无真实数据源时, 适配器返回 canned mock 证据(勒索病毒场景), 便于 S3/S4 端到端开发
+    evidence_mock_mode: bool = True
+    # 任务调度: asyncio (默认, 进程内) | celery (需安装 celery + worker)
+    task_runner: str = "asyncio"
 
     # ---- 安全 (P1 基础 Token, P4 上 RBAC/LDAP) ----
     api_token: Optional[str] = None             # 为空则不强制鉴权 (仅 dev)

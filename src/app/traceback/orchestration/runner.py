@@ -46,13 +46,16 @@ def _effective_stage(snapshot: Any) -> str:
 async def run_until_interrupt(
     task_id: str,
     initial_state: Optional[dict[str, Any]] = None,
+    graph: Any = None,
 ) -> dict[str, Any]:
     """启动/继续运行图, 直到遇到 interrupt(审核节点) 或 END。
 
+    Args:
+        graph: 可选, 测试注入编译图; 默认用全局 get_graph()
     Returns:
         最终 state 快照
     """
-    graph = get_graph()
+    graph = graph or get_graph()
     config = _config(task_id)
 
     if initial_state is not None:
@@ -78,12 +81,14 @@ async def run_until_interrupt(
     return state_values
 
 
-async def resume_with_decision(task_id: str, decision: dict[str, Any]) -> dict[str, Any]:
+async def resume_with_decision(
+    task_id: str, decision: dict[str, Any], graph: Any = None
+) -> dict[str, Any]:
     """人工审核后, 携带决策恢复运行 (POST /resume)。
 
     decision: {action, comments, modifications, reviewer}
     """
-    graph = get_graph()
+    graph = graph or get_graph()
     config = _config(task_id)
     stream = graph.astream(Command(resume=decision), config=config)
     async for _ in stream:

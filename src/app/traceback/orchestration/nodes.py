@@ -21,9 +21,17 @@ NodeFn = Callable[[TracebackState], dict[str, Any]]
 # ---- 业务节点 stub (S2~S4 替换为真实智能体) ----
 
 async def collect_evidence_node(state: TracebackState) -> dict[str, Any]:
-    """证据收集 (§4.1). S2 实现: LLM 查询计划 + 并行适配器 + 评估。"""
+    """证据收集 (§4.1). S2: EvidenceCollector 智能体 (LLM 查询计划 + 并行适配器 + 评估)。"""
+    from src.app.traceback.agents.evidence_collector import EvidenceCollector
+
+    logger.info("[{}] 证据收集 task={}", "collect_evidence", state.get("task_id"))
+    agent = EvidenceCollector()
+    return await agent.safe_run(state)
+
+
+async def collect_evidence_stub(state: TracebackState) -> dict[str, Any]:
+    """证据收集 stub (测试用, 不触达 DB/适配器)"""
     logger.info("[{}] 证据收集(stub) task={}", "collect_evidence", state.get("task_id"))
-    # stub: 无真实证据, 仅推进
     return {"stage": "collecting", "evidence_ids": []}
 
 
@@ -113,3 +121,13 @@ def route_after_review_chain(state: TracebackState) -> str:
     """审核②后: approve → attribute; revise → analyze_chain"""
     decision = state.get("review_decision") or {}
     return "attribute" if decision.get("action") == "approve" else "analyze_chain"
+
+
+# 默认业务节点注册表 (审核 interrupt 节点固定, 不可覆盖)
+DEFAULT_NODES: dict[str, NodeFn] = {
+    "collect_evidence": collect_evidence_node,
+    "build_timeline": build_timeline_node,
+    "analyze_chain": analyze_chain_node,
+    "attribute": attribute_node,
+    "report": report_node,
+}

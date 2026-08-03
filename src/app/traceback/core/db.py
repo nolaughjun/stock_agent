@@ -48,6 +48,18 @@ async def get_session():
         yield session
 
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def session_scope():
+    """PG 异步会话上下文管理器 (供智能体/服务在请求外使用)"""
+    if _session_factory is None:
+        get_pg_engine()
+    async with _session_factory() as session:  # type: ignore[union-attr]
+        yield session
+
+
 # ---- MongoDB (motor) ----
 _mongo_client: Optional[Any] = None
 

@@ -15,11 +15,15 @@ import pytest
 from src.app.traceback.adapters.base import BaseAdapter
 from src.app.traceback.adapters.manager import ComponentManager
 from src.app.traceback.orchestration.graph import build_graph
+from src.app.traceback.orchestration.nodes import collect_evidence_stub
 from src.app.traceback.orchestration.state import STAGE_PROGRESS
 from src.app.traceback.schemas.attack_chain import AttackChain
 from src.app.traceback.schemas.evidence import EvidenceMeta
 from src.app.traceback.schemas.task import TaskCreate
 from src.app.traceback.schemas.timeline import TimelineEvent
+
+# 业务节点用 stub, 避免触达 DB/适配器; 审核 interrupt 节点为真实实现(被测对象)
+_STUB_NODES = {"collect_evidence": collect_evidence_stub}
 
 
 # ---------- schemas ----------
@@ -103,7 +107,7 @@ async def test_manager_degrades_on_failure():
 @pytest.mark.asyncio
 async def test_graph_interrupt_and_resume():
     """核心: 启动→审核①interrupt→approve恢复→审核②interrupt→approve恢复→END"""
-    graph = build_graph()
+    graph = build_graph(node_overrides=_STUB_NODES)
     config = {"configurable": {"thread_id": "t-test"}}
 
     # 1. 启动, 应在 review_timeline 处 interrupt
@@ -141,7 +145,7 @@ async def test_graph_interrupt_and_resume():
 @pytest.mark.asyncio
 async def test_graph_revise_loops_back():
     """revise 审核①应回退到 collect_evidence"""
-    graph = build_graph()
+    graph = build_graph(node_overrides=_STUB_NODES)
     config = {"configurable": {"thread_id": "t-revise"}}
     await graph.ainvoke({"task_id": "t-revise", "stage": "created"}, config=config)
     from langgraph.types import Command
@@ -170,9 +174,12 @@ async def test_runner_effective_stage_after_interrupt():
     否则进度接口误判、/review 校验失败。
     """
     from src.app.traceback.orchestration import runner
+    graph = build_graph(node_overrides=_STUB_NODES)
     # 每个测试用独立 thread_id 避免与其它用例 checkpoint 冲突
     state = await runner.run_until_interrupt(
-        "t-runner-stage", initial_state={"task_id": "t-runner-stage", "stage": "created"}
+        "t-runner-stage",
+        initial_state={"task_id": "t-runner-stage", "stage": "created"},
+        graph=graph,
     )
     assert state["stage"] == "review_timeline", (
         f"中断后有效阶段应为 review_timeline, 实际 {state['stage']}"
@@ -180,7 +187,7 @@ async def test_runner_effective_stage_after_interrupt():
 
     # 恢复 approve → 应停在 review_chain
     state = await runner.resume_with_decision(
-        "t-runner-stage", {"action": "approve", "reviewer": "tester"}
+        "t-runner-stage", {"action": "approve", "reviewer": "tester"}, graph=graph
     )
     assert state["stage"] == "review_chain", (
         f"审核①approve 后应停在 review_chain, 实际 {state['stage']}"
@@ -188,7 +195,7 @@ async def test_runner_effective_stage_after_interrupt():
 
     # 恢复 approve → END, stage=reported
     state = await runner.resume_with_decision(
-        "t-runner-stage", {"action": "approve", "reviewer": "tester"}
+        "t-runner-stage", {"action": "approve", "reviewer": "tester"}, graph=graph
     )
     assert state["stage"] == "reported"
 

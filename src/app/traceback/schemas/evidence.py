@@ -78,3 +78,25 @@ class EvidenceScore(BaseModel):
     tags: list[str] = Field(default_factory=list)
     related_assets: list[str] = Field(default_factory=list)
     summary: str = Field("", description="一句话摘要")
+
+
+class CollectContext(BaseModel):
+    """证据收集上下文 (适配器统一输入)"""
+    task_id: str
+    asset_ips: list[str] = Field(default_factory=list)
+    asset_hosts: list[str] = Field(default_factory=list)
+    asset_users: list[str] = Field(default_factory=list)
+    event_start_time: Optional[datetime] = None
+    event_end_time: Optional[datetime] = None
+    # LLM 生成的数据源查询提示 (供适配器构造 DSL)
+    query_hint: dict[str, Any] = Field(default_factory=dict)
+
+
+class RawEvidence(BaseModel):
+    """适配器返回的原始证据项 (统一结构, 收集前)"""
+    evidence_type: EvidenceType
+    source: str
+    raw: dict[str, Any] = Field(default_factory=dict)
+    parsed: dict[str, Any] = Field(default_factory=dict)
+    related_assets: list[str] = Field(default_factory=list)
+    importance: ImportanceLevel = "medium"
