@@ -20,6 +20,7 @@ from src.app.traceback.orchestration.state import STAGE_PROGRESS, AWAITING_REVIE
 _INTERRUPT_STAGE: dict[str, str] = {
     "review_timeline": "review_timeline",
     "review_chain": "review_chain",
+    "review_attribution": "review_attribution",
 }
 
 

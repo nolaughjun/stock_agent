@@ -17,6 +17,7 @@ from src.app.traceback.adapters.manager import ComponentManager
 from src.app.traceback.orchestration.graph import build_graph
 from src.app.traceback.orchestration.nodes import (
     analyze_chain_stub,
+    attribute_stub,
     build_timeline_stub,
     collect_evidence_stub,
     report_stub,
@@ -32,6 +33,7 @@ _STUB_NODES = {
     "collect_evidence": collect_evidence_stub,
     "build_timeline": build_timeline_stub,
     "analyze_chain": analyze_chain_stub,
+    "attribute": attribute_stub,
     "report": report_stub,
 }
 
@@ -116,40 +118,36 @@ async def test_manager_degrades_on_failure():
 
 @pytest.mark.asyncio
 async def test_graph_interrupt_and_resume():
-    """核心: 启动→审核①interrupt→approve恢复→审核②interrupt→approve恢复→END"""
+    """核心: 审核①②③ interrupt→approve 全链路恢复→END"""
     graph = build_graph(node_overrides=_STUB_NODES)
     config = {"configurable": {"thread_id": "t-test"}}
-
-    # 1. 启动, 应在 review_timeline 处 interrupt
-    await graph.ainvoke(
-        {"task_id": "t-test", "stage": "created"}, config=config
-    )
-    snapshot = await graph.aget_state(config)
-    # interrupt 后 next 应是 review_timeline
-    assert snapshot.next, "应在审核①处暂停"
-    assert "review_timeline" in snapshot.next
-
-    # 2. 恢复审核① approve
     from langgraph.types import Command
-    await graph.ainvoke(
-        Command(resume={"action": "approve", "reviewer": "tester"}), config=config
-    )
-    snapshot = await graph.aget_state(config)
-    stage_after = snapshot.values.get("stage")
-    # approve 后进入 chain_analyzed → review_chain interrupt
-    assert stage_after in ("chain_analyzed", "review_chain")
-    assert snapshot.next, "应在审核②处暂停"
-    assert "review_chain" in snapshot.next
 
-    # 3. 恢复审核② approve → END
-    await graph.ainvoke(
-        Command(resume={"action": "approve", "reviewer": "tester"}), config=config
-    )
+    async def _approve():
+        await graph.ainvoke(
+            Command(resume={"action": "approve", "reviewer": "tester"}), config=config
+        )
+
+    # 1. 启动 → 审核① interrupt
+    await graph.ainvoke({"task_id": "t-test", "stage": "created"}, config=config)
+    snapshot = await graph.aget_state(config)
+    assert "review_timeline" in snapshot.next, "应在审核①处暂停"
+
+    # 2. approve① → 审核② interrupt
+    await _approve()
+    snapshot = await graph.aget_state(config)
+    assert "review_chain" in snapshot.next, "应在审核②处暂停"
+
+    # 3. approve② → 审核③(归因) interrupt
+    await _approve()
+    snapshot = await graph.aget_state(config)
+    assert "review_attribution" in snapshot.next, "应在审核③(归因)处暂停"
+
+    # 4. approve③ → END
+    await _approve()
     snapshot = await graph.aget_state(config)
     assert snapshot.next == (), "应已到达 END"
     assert snapshot.values.get("stage") == "reported"
-    # 归因桩置信度 0
-    assert snapshot.values.get("attribution", {}).get("confidence_score") == 0.0
 
 
 @pytest.mark.asyncio
@@ -170,7 +168,8 @@ async def test_graph_revise_loops_back():
 def test_stage_progress_monotonic():
     """进度百分比随阶段递增"""
     order = ["created", "collecting", "timeline_built", "review_timeline",
-             "chain_analyzed", "review_chain", "attributed", "reported"]
+             "chain_analyzed", "review_chain", "attributed",
+             "review_attribution", "reported"]
     vals = [STAGE_PROGRESS[s] for s in order]
     assert vals == sorted(vals)
     assert STAGE_PROGRESS["reported"] == 100
@@ -195,7 +194,7 @@ async def test_runner_effective_stage_after_interrupt():
         f"中断后有效阶段应为 review_timeline, 实际 {state['stage']}"
     )
 
-    # 恢复 approve → 应停在 review_chain
+    # 恢复 approve① → 应停在 review_chain
     state = await runner.resume_with_decision(
         "t-runner-stage", {"action": "approve", "reviewer": "tester"}, graph=graph
     )
@@ -203,7 +202,15 @@ async def test_runner_effective_stage_after_interrupt():
         f"审核①approve 后应停在 review_chain, 实际 {state['stage']}"
     )
 
-    # 恢复 approve → END, stage=reported
+    # 恢复 approve② → 应停在 review_attribution(审核③)
+    state = await runner.resume_with_decision(
+        "t-runner-stage", {"action": "approve", "reviewer": "tester"}, graph=graph
+    )
+    assert state["stage"] == "review_attribution", (
+        f"审核②approve 后应停在 review_attribution, 实际 {state['stage']}"
+    )
+
+    # 恢复 approve③ → END, stage=reported
     state = await runner.resume_with_decision(
         "t-runner-stage", {"action": "approve", "reviewer": "tester"}, graph=graph
     )

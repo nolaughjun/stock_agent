@@ -10,7 +10,10 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-EvidenceType = Literal["log", "traffic", "intel", "dns", "sample"]
+EvidenceType = Literal[
+    "log", "traffic", "intel", "dns", "sample",
+    "memory", "endpoint_deep", "traffic_deep",  # P2 深度取证扩展 (§6.3)
+]
 ImportanceLevel = Literal["high", "medium", "low"]
 
 

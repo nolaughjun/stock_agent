@@ -10,6 +10,9 @@
 | S2 | M2 任务管理+证据收集 | ✅ 已完成 | 证据三段式存储、真实 SIEM/MISP 适配器(+mock 降级)、EvidenceCollector 智能体、task_runner 服务、证据查询 API、单测 18/18 |
 | S3 | M3 时间线+攻击链 | ✅ 已完成 | ATT&CK 白名单、TimelineBuilder(LLM+规则兜底)、AttackChainAgent(入口反向溯源/横向/TTP/路径图)、timeline/attack-chain API、单测 28/28 |
 | S4 | M4 报告+MVP | ✅ 已完成 | Reporter(叙事+模板+SVG路径图)、MD/PDF/Word 转换+MinIO 存储、报告下载 API、PG checkpointer(opt-in)、UAT 迷你管道、单测 33/33 |
+| P2 加固 | 质量门/测试 | ✅ 已完成 | TTP 黄金样本评测(F1>0.8)、API 集成测试(11)、SIEM 真实路径、ruff 全清、UAT 脚本、单测 52/52 |
+| P2-S5 | 归因智能体 | ✅ 已完成 | AttributionAgent(三因子加权+LLM画像)、OpenCTI(GraphQL+种子降级)、相似案例匹配、归因审核③、/attribution API |
+| P2-S6 | 深度取证 | ✅ 已完成 | Zeek/Velociraptor/YARA/CAPE/Volatility 适配器(mock降级)+DeepForensicsCollector 异步调度 |
 
 ## P1 MVP 完成总结
 

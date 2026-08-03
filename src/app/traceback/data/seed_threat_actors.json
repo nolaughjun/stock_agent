@@ -1,0 +1,38 @@
+{
+  "_comment": "威胁组织种子情报 (OpenCTI 不可达时的降级数据, 02_phase2_design.md §3.3)。预置几个典型组织及其 TTPs/工具/IOC, 供三因子归因算法匹配。真实环境配置 OPENCTI_URL 后从 OpenCTI GraphQL 动态查询。",
+  "actors": [
+    {
+      "name": "RansomX Operator",
+      "description": "以勒索软件即服务(RaaS)运作的犯罪组织, 常用钓鱼+PowerShell+Cobalt Strike",
+      "sophistication": "advanced",
+      "primary_motivation": "financial",
+      "goals": ["数据加密勒索", "双重勒索(数据外传+加密)"],
+      "campaigns": ["2026-Q2 财务部门勒索攻势"],
+      "ttps": ["T1566.001", "T1059.001", "T1021.001", "T1003.001", "T1486", "T1071.001"],
+      "tools": ["Cobalt Strike", "Mimikatz", "PowerShell"],
+      "iocs": ["203.0.113.55", "malicious-c2.example", "cdn-update-check.com"]
+    },
+    {
+      "name": "APT-XX (Espionage)",
+      "description": "国家级 APT 组织, 长期潜伏窃密, 擅长鱼叉钓鱼与凭据窃取",
+      "sophistication": "expert",
+      "primary_motivation": "espionage",
+      "goals": ["敏感数据窃取", "长期持久化"],
+      "campaigns": ["Operation SilentExfil"],
+      "ttps": ["T1566.002", "T1059.001", "T1547.001", "T1003.001", "T1071.001", "T1041"],
+      "tools": ["Cobalt Strike", "custom_implant"],
+      "iocs": ["198.51.100.23", "secure-update.example"]
+    },
+    {
+      "name": "CryptoMiner Gang",
+      "description": "利用暴露服务植入挖矿程序的组织",
+      "sophistication": "intermediate",
+      "primary_motivation": "financial",
+      "goals": ["挖矿牟利"],
+      "campaigns": [],
+      "ttps": ["T1190", "T1059.003", "T1490", "T1496"],
+      "tools": ["xmrig"],
+      "iocs": ["203.0.113.99"]
+    }
+  ]
+}

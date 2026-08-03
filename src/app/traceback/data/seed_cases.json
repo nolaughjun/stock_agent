@@ -1,0 +1,35 @@
+{
+  "_comment": "相似案例种子数据 (02_phase2_design.md §3.4)。P2 用预置公开溯源案例做向量相似匹配(归因旁证), P3 案例库建成后替换为真实案例 + Milvus 索引。",
+  "cases": [
+    {
+      "case_id": "case-2025-ransomware-001",
+      "title": "某企业财务部勒索病毒攻击溯源",
+      "attack_type": "ransomware",
+      "description": "钓鱼邮件投递勒索病毒, PowerShell 落地, Cobalt Strike 横向, 最终全盘加密",
+      "ttps": ["T1566.001", "T1059.001", "T1021.001", "T1003.001", "T1486"],
+      "ioc_types": ["ip", "domain"],
+      "threat_actor": "RansomX Operator",
+      "response": "隔离主机+封禁C2+重置凭据+恢复备份"
+    },
+    {
+      "case_id": "case-2025-apt-001",
+      "title": "APT 组织定向窃密事件",
+      "attack_type": "apt",
+      "description": "鱼叉钓鱼链接种入后门, 长期潜伏窃取研发数据",
+      "ttps": ["T1566.002", "T1059.001", "T1547.001", "T1003.001", "T1041"],
+      "ioc_types": ["ip", "domain"],
+      "threat_actor": "APT-XX (Espionage)",
+      "response": "清除后门+修复入口+加强终端监控"
+    },
+    {
+      "case_id": "case-2025-cryptomining-001",
+      "title": "公网服务被植入挖矿程序",
+      "attack_type": "cryptomining",
+      "description": "利用暴露的 Web 服务漏洞植入 xmrig 挖矿",
+      "ttps": ["T1190", "T1059.003", "T1496"],
+      "ioc_types": ["ip"],
+      "threat_actor": "CryptoMiner Gang",
+      "response": "修复漏洞+清除挖矿进程+限制出网"
+    }
+  ]
+}

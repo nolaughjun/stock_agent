@@ -10,11 +10,13 @@ from fastapi import APIRouter, HTTPException
 from src.app.traceback.api.deps import ReviewerDep, SessionDep
 from src.app.traceback.repositories import (
     attack_chain_repo,
+    attribution_repo,
     evidence_repo,
     task_repo,
     timeline_repo,
 )
 from src.app.traceback.schemas.attack_chain import AttackChainOut
+from src.app.traceback.schemas.attribution import AttributionOut
 from src.app.traceback.schemas.evidence import EvidenceOut
 from src.app.traceback.schemas.timeline import TimelineOut
 
@@ -40,6 +42,15 @@ async def get_attack_chain(task_id: str, session: SessionDep, _: ReviewerDep):
         raise HTTPException(404, detail={"code": "TB-1001", "message": "任务不存在"})
     chain = await attack_chain_repo.get_chain(session, task_id)
     return AttackChainOut(task_id=task_id, chain=chain)
+
+
+@router.get("/{task_id}/attribution", response_model=AttributionOut)
+async def get_attribution(task_id: str, session: SessionDep, _: ReviewerDep):
+    """获取归因结果(含候选威胁组织 + 攻击者画像 + 相似案例)"""
+    if not await _ensure_task(session, task_id):
+        raise HTTPException(404, detail={"code": "TB-1001", "message": "任务不存在"})
+    attr = await attribution_repo.get_attribution(session, task_id)
+    return AttributionOut(task_id=task_id, attribution=attr)
 
 
 @router.get("/{task_id}/report")

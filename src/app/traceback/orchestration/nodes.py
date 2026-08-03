@@ -21,12 +21,15 @@ NodeFn = Callable[[TracebackState], dict[str, Any]]
 # ---- 业务节点 stub (S2~S4 替换为真实智能体) ----
 
 async def collect_evidence_node(state: TracebackState) -> dict[str, Any]:
-    """证据收集 (§4.1). S2: EvidenceCollector 智能体 (LLM 查询计划 + 并行适配器 + 评估)。"""
+    """证据收集 (§4.1). 基础证据(EvidenceCollector) + 深度取证(DeepForensicsCollector)。"""
     from src.app.traceback.agents.evidence_collector import EvidenceCollector
+    from src.app.traceback.services.deep_forensics import DeepForensicsCollector
 
     logger.info("[{}] 证据收集 task={}", "collect_evidence", state.get("task_id"))
-    agent = EvidenceCollector()
-    return await agent.safe_run(state)
+    basic = await EvidenceCollector().safe_run(state)
+    deep = await DeepForensicsCollector().run(state)
+    # 合并: 基础 evidence_ids + 深度 deep_evidence_ids
+    return {**basic, "deep_evidence_ids": deep.get("deep_evidence_ids", [])}
 
 
 async def collect_evidence_stub(state: TracebackState) -> dict[str, Any]:
@@ -66,19 +69,24 @@ async def analyze_chain_stub(state: TracebackState) -> dict[str, Any]:
 
 
 async def attribute_node(state: TracebackState) -> dict[str, Any]:
-    """威胁归因 (P1 桩, §1.2). P2 替换为完整归因智能体。
+    """威胁归因 (§3). P2: AttributionAgent 智能体 (特征提取/三因子/画像)。"""
+    from src.app.traceback.agents.attribution import AttributionAgent
 
-    P1 仅汇总 IOC 命中, 置信度 0, 保证流水线结构完整。
-    """
-    logger.info("[{}] 归因(P1桩) task={}", "attribute", state.get("task_id"))
+    logger.info("[{}] 归因分析 task={}", "attribute", state.get("task_id"))
+    agent = AttributionAgent()
+    return await agent.safe_run(state)
+
+
+async def attribute_stub(state: TracebackState) -> dict[str, Any]:
+    """归因 stub (测试用)"""
+    logger.info("[{}] 归因(stub) task={}", "attribute", state.get("task_id"))
     return {
         "stage": "attributed",
         "attribution": {
-            "attributed": False,
-            "confidence_score": 0.0,
-            "matched_iocs": [],
-            "note": "P1 桩: 归因能力 P2 实现",
+            "attributed": False, "confidence_score": 0.0, "matched_iocs": [],
+            "note": "stub",
         },
+        "similar_cases": [],
     }
 
 
@@ -114,6 +122,8 @@ def _review(stage_name: str, next_approve: str, next_revise: str) -> NodeFn:
             "task_id": state.get("task_id"),
             "timeline": state.get("timeline_events"),
             "attack_chain": state.get("attack_chain"),
+            "attribution": state.get("attribution"),
+            "similar_cases": state.get("similar_cases"),
             "prompt": f"请审核 {stage_name}, approve 继续 或 revise 修正",
         })
         # 恢复时由 API 注入 decision: {action, comments, modifications, reviewer}
@@ -134,6 +144,8 @@ def _review(stage_name: str, next_approve: str, next_revise: str) -> NodeFn:
 
 review_timeline_node = _review("timeline", "chain_analyzed", "collecting")
 review_chain_node = _review("attack_chain", "attributed", "chain_analyzed")
+# 审核③: 归因 approve → reported(报告); revise → 重算归因
+review_attribution_node = _review("attribution", "reported", "attributed")
 
 
 # ---- 条件路由 ----
@@ -148,6 +160,12 @@ def route_after_review_chain(state: TracebackState) -> str:
     """审核②后: approve → attribute; revise → analyze_chain"""
     decision = state.get("review_decision") or {}
     return "attribute" if decision.get("action") == "approve" else "analyze_chain"
+
+
+def route_after_review_attribution(state: TracebackState) -> str:
+    """审核③后: approve → report; revise → attribute(重算归因)"""
+    decision = state.get("review_decision") or {}
+    return "report" if decision.get("action") == "approve" else "attribute"
 
 
 # 默认业务节点注册表 (审核 interrupt 节点固定, 不可覆盖)

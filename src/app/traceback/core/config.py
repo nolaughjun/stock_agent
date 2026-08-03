@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     misp_api_key: Optional[str] = None
     timesketch_url: Optional[str] = None
     timesketch_api_key: Optional[str] = None
+    # P2 深度取证 / 归因
+    opencti_url: Optional[str] = None
+    opencti_api_key: Optional[str] = None
+    zeek_es_hosts: Optional[str] = None       # Zeek→ES, 复用 SIEM ES 集群
+    velociraptor_url: Optional[str] = None
+    velociraptor_api_key: Optional[str] = None
+    cape_url: Optional[str] = None
+    cape_api_key: Optional[str] = None
+    yara_rules_dir: Optional[str] = None
+    volatility_path: Optional[str] = None
 
     # ---- 分析参数 ----
     evidence_collect_timeout: int = 60          # 单适配器超时(秒)

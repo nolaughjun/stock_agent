@@ -20,8 +20,10 @@ from langgraph.graph import END, START, StateGraph
 
 from src.app.traceback.orchestration.nodes import (
     DEFAULT_NODES,
+    review_attribution_node,
     review_chain_node,
     review_timeline_node,
+    route_after_review_attribution,
     route_after_review_chain,
     route_after_review_timeline,
 )
@@ -52,6 +54,7 @@ def build_graph(
     graph.add_node("analyze_chain", nodes["analyze_chain"])
     graph.add_node("review_chain", review_chain_node)
     graph.add_node("attribute", nodes["attribute"])
+    graph.add_node("review_attribution", review_attribution_node)
     graph.add_node("report", nodes["report"])
 
     # 边
@@ -75,7 +78,16 @@ def build_graph(
         {"attribute": "attribute", "analyze_chain": "analyze_chain"},
     )
 
-    graph.add_edge("attribute", "report")
+    # 归因后插入审核③
+    graph.add_edge("attribute", "review_attribution")
+
+    # 审核③: approve → report; revise → attribute(重算归因)
+    graph.add_conditional_edges(
+        "review_attribution",
+        route_after_review_attribution,
+        {"report": "report", "attribute": "attribute"},
+    )
+
     graph.add_edge("report", END)
 
     return graph.compile(checkpointer=checkpointer)

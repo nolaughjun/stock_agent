@@ -43,6 +43,8 @@ async def progress(task_id: str, session: SessionDep, _: ReviewerDep):
         review_stage = "timeline"
     elif stage == "review_chain":
         review_stage = "attack_chain"
+    elif stage == "review_attribution":
+        review_stage = "attribution"
     return TaskProgress(
         task_id=task_id,
         status=task["status"],
@@ -64,6 +66,7 @@ async def review(
     expected_stage = {
         "timeline": "review_timeline",
         "attack_chain": "review_chain",
+        "attribution": "review_attribution",
     }.get(payload.stage)
     if expected_stage and task["current_stage"] != expected_stage:
         raise HTTPException(

@@ -97,6 +97,100 @@ _MOCK_DISPATCH: dict[str, Any] = {
 }
 
 
+# ---- P2 深度取证 mock 数据 (§4) ----
+
+def mock_zeek_traffic(ctx: CollectContext) -> list[RawEvidence]:
+    asset = _first_asset(ctx)
+    return [
+        RawEvidence(
+            evidence_type="traffic", source="zeek", raw={
+                "log_type": "conn", "src": asset, "dst": "203.0.113.55",
+                "ts": "2026-07-01T08:30:00Z", "duration": 60, "bytes": 1024,
+                "note": "c2_beacon_fixed_interval",
+            }, parsed={"note": "c2_beacon"}, related_assets=[asset, "203.0.113.55"],
+            importance="high",
+        ),
+        RawEvidence(
+            evidence_type="traffic", source="zeek", raw={
+                "log_type": "dns", "query": "asdjkwza.malicious-c2.example",
+                "ts": "2026-07-01T08:28:00Z", "note": "dga_suspected",
+            }, parsed={"note": "dga"}, related_assets=[], importance="medium",
+        ),
+    ]
+
+
+def mock_velociraptor_artifacts(ctx: CollectContext) -> list[RawEvidence]:
+    asset = _first_asset(ctx)
+    return [
+        RawEvidence(
+            evidence_type="endpoint_deep", source="velociraptor", raw={
+                "artifact": "Windows.System.Pslist", "host": asset,
+                "process": "ransomware.exe", "pid": 3333, "parent": "powershell.exe",
+            }, parsed={"artifact": "Pslist", "host": asset}, related_assets=[asset],
+            importance="high",
+        ),
+        RawEvidence(
+            evidence_type="endpoint_deep", source="velociraptor", raw={
+                "artifact": "Windows.Network.Netstat", "host": asset,
+                "remote": "203.0.113.55:443", "state": "ESTABLISHED",
+            }, parsed={"artifact": "Netstat", "c2": "203.0.113.55"}, related_assets=[asset],
+            importance="high",
+        ),
+    ]
+
+
+def mock_yara_matches(ctx: CollectContext) -> list[RawEvidence]:
+    return [
+        RawEvidence(
+            evidence_type="sample", source="yara", raw={
+                "rule": "RansomX_Loader", "file": "C:/temp/loader.exe",
+                "malware_family": "RansomX", "md5": "aabbccdd11223344",
+            }, parsed={"malware_family": "RansomX", "rule": "RansomX_Loader"},
+            related_assets=[], importance="high",
+        ),
+    ]
+
+
+def mock_cape_report(ctx: CollectContext) -> list[RawEvidence]:
+    return [
+        RawEvidence(
+            evidence_type="sample", source="cape", raw={
+                "sample": "loader.exe", "family": "RansomX", "score": 8.5,
+                "network": [{"ip": "203.0.113.55", "port": 443}],
+                "dropped": ["ransomware.dll"], "behavior": ["encrypt_files", "c2_comm"],
+            }, parsed={"malware_family": "RansomX", "score": 8.5},
+            related_assets=[], importance="high",
+        ),
+    ]
+
+
+def mock_volatility_findings(ctx: CollectContext) -> list[RawEvidence]:
+    asset = _first_asset(ctx)
+    return [
+        RawEvidence(
+            evidence_type="memory", source="volatility", raw={
+                "plugin": "malfind", "host": asset, "process": "lsass.exe", "pid": 2222,
+                "note": "injected_code_detected",
+            }, parsed={"plugin": "malfind", "note": "injection"}, related_assets=[asset],
+            importance="high",
+        ),
+    ]
+
+
+_DEEP_MOCK_DISPATCH: dict[str, Any] = {
+    "zeek": mock_zeek_traffic,
+    "velociraptor": mock_velociraptor_artifacts,
+    "yara": mock_yara_matches,
+    "cape": mock_cape_report,
+    "volatility": mock_volatility_findings,
+}
+
+
+def get_deep_mock_evidence(source: str, ctx: CollectContext) -> list[RawEvidence]:
+    fn = _DEEP_MOCK_DISPATCH.get(source)
+    return fn(ctx) if fn else []
+
+
 def get_mock_evidence(source: str, ctx: CollectContext) -> list[RawEvidence]:
     fn = _MOCK_DISPATCH.get(source)
     return fn(ctx) if fn else []

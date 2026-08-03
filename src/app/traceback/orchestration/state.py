@@ -11,7 +11,7 @@ from operator import add
 Stage = Literal[
     "created", "collecting", "timeline_built",
     "review_timeline", "chain_analyzed",
-    "review_chain", "attributed", "reported",
+    "review_chain", "attributed", "review_attribution", "reported",
 ]
 
 
@@ -25,7 +25,9 @@ class TracebackState(TypedDict, total=False):
     evidence_ids: Annotated[list[str], add]    # 累积证据ID
     timeline_events: list[dict[str, Any]]      # TimelineEvent[]
     attack_chain: dict[str, Any] | None        # AttackChain
-    attribution: dict[str, Any] | None         # AttributionResult (P1桩)
+    attribution: dict[str, Any] | None         # AttributionResult (P2 完整)
+    similar_cases: list[dict[str, Any]]        # 相似案例匹配结果
+    deep_evidence_ids: Annotated[list[str], add]  # 深度取证产出证据 (P2)
     report_path: str | None
     stage: Stage
     errors: Annotated[list[str], add]
@@ -42,8 +44,11 @@ STAGE_PROGRESS: dict[Stage, int] = {
     "review_timeline": 45,
     "chain_analyzed": 65,
     "review_chain": 70,
-    "attributed": 85,
+    "attributed": 83,
+    "review_attribution": 88,
     "reported": 100,
 }
 
-AWAITING_REVIEW_STAGES: set[Stage] = {"review_timeline", "review_chain"}
+AWAITING_REVIEW_STAGES: set[Stage] = {
+    "review_timeline", "review_chain", "review_attribution",
+}
