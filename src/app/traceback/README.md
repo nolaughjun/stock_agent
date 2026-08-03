@@ -9,7 +9,17 @@
 | S1 | M1 基础架构 | ✅ 已完成 | 目录骨架、core、schemas、智能体/适配器基座、LangGraph 编排(含 interrupt 审核)、API、Docker Compose、单测 9/9 通过 |
 | S2 | M2 任务管理+证据收集 | ✅ 已完成 | 证据三段式存储、真实 SIEM/MISP 适配器(+mock 降级)、EvidenceCollector 智能体、task_runner 服务、证据查询 API、单测 18/18 |
 | S3 | M3 时间线+攻击链 | ✅ 已完成 | ATT&CK 白名单、TimelineBuilder(LLM+规则兜底)、AttackChainAgent(入口反向溯源/横向/TTP/路径图)、timeline/attack-chain API、单测 28/28 |
-| S4 | M4 报告+MVP | ⏳ 待开发 | 报告生成、PDF/Word 导出、PG checkpointer、UAT-001 |
+| S4 | M4 报告+MVP | ✅ 已完成 | Reporter(叙事+模板+SVG路径图)、MD/PDF/Word 转换+MinIO 存储、报告下载 API、PG checkpointer(opt-in)、UAT 迷你管道、单测 33/33 |
+
+## P1 MVP 完成总结
+
+溯源分析系统 P1 端到端最小闭环已打通: **任务 → 证据收集 → 时间线 → 攻击链 → (归因桩) → 报告**, 含人工审核①②中断-恢复。
+
+- **33 项单测全通过**, 确定性运行(测试 conftest 禁用 LLM 走规则兜底, 不触网)
+- **6 智能体**: EvidenceCollector / TimelineBuilder / AttackChainAgent / Attribution(桩) / Reporter + 编排
+- **LLM + 规则双路径**: 有 DEEPSEEK_API_KEY 走 LLM, 无则规则兜底, 无 key 环境可端到端跑通
+- **三段式存储**: MinIO(原始/报告) / Mongo(元数据/时间线) / PG(任务/引用/攻击链/审核)
+- **生产化预留**: PG checkpointer(opt-in)、Celery 脚手架(懒加载)、适配器降级
 
 ## 已交付(M1)
 

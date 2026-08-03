@@ -22,11 +22,17 @@ from src.app.traceback.api.v1 import analysis, results, tasks
 from src.app.traceback.core.config import settings
 from src.app.traceback.core.db import close_all
 from src.app.traceback.core.logging import logger
+from src.app.traceback.orchestration.checkpointer import init_checkpointer
+from src.app.traceback.orchestration.graph import set_checkpointer
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("启动 {} v{}", settings.app_name, settings.app_version)
+
+    # 初始化检查点后端 (memory 默认 / postgres 生产级)
+    checkpointer = await init_checkpointer()
+    set_checkpointer(checkpointer)
 
     # 初始化适配器 (并行连接+健康检查, 失败降级)
     manager = get_manager()

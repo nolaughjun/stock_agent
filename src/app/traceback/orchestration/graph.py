@@ -83,12 +83,20 @@ def build_graph(
 
 # 全局编译图 (懒加载)
 _compiled: Any = None
+_checkpointer: Any = None
+
+
+def set_checkpointer(checkpointer: Any) -> None:
+    """设置检查点后端 (由 lifespan 调用), 并重置编译图使其生效"""
+    global _checkpointer, _compiled
+    _checkpointer = checkpointer
+    _compiled = None
 
 
 def get_graph():
     global _compiled
     if _compiled is None:
-        _compiled = build_graph()
+        _compiled = build_graph(checkpointer=_checkpointer)
     return _compiled
 
 

@@ -19,6 +19,7 @@ from src.app.traceback.orchestration.nodes import (
     analyze_chain_stub,
     build_timeline_stub,
     collect_evidence_stub,
+    report_stub,
 )
 from src.app.traceback.orchestration.state import STAGE_PROGRESS
 from src.app.traceback.schemas.attack_chain import AttackChain
@@ -31,6 +32,7 @@ _STUB_NODES = {
     "collect_evidence": collect_evidence_stub,
     "build_timeline": build_timeline_stub,
     "analyze_chain": analyze_chain_stub,
+    "report": report_stub,
 }
 
 

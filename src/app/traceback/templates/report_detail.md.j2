@@ -21,7 +21,14 @@
 
 ## 三、攻击链分析
 
+{% if attack_narrative %}
+{{ attack_narrative }}
+{% endif %}
+
 - **攻击入口**: {{ attack_chain.entry_point.asset if attack_chain and attack_chain.entry_point else "未识别" }}
+{% if attack_chain and attack_chain.entry_point and attack_chain.entry_point.technique_id %}
+  - 入口手法: {{ attack_chain.entry_point.technique_id }} ({{ attack_chain.entry_point.vector }})
+{% endif %}
 {% if attack_chain and attack_chain.lateral_movements %}
 - **横向移动路径**:
 {% for lm in attack_chain.lateral_movements %}
@@ -30,6 +37,26 @@
 {% endif %}
 - **受影响资产**: {{ attack_chain.affected_assets | join(", ") if attack_chain else "" }}
 - **数据外传**: {{ "是" if attack_chain and attack_chain.data_exfiltration else "否" }}
+- **攻击者基础设施**: IP {{ attack_chain.attacker_ips | join(", ") if attack_chain else "" }}{% if attack_chain and attack_chain.attacker_domains %} / 域名 {{ attack_chain.attacker_domains | join(", ") }}{% endif %}
+- **使用工具**: {{ attack_chain.attacker_tools | join(", ") if attack_chain and attack_chain.attacker_tools else "未识别" }}
+
+{% if path_graph_svg %}
+### 攻击路径图
+
+{{ path_graph_svg }}
+{% endif %}
+
+### TTP 矩阵 (MITRE ATT&CK)
+
+| Technique ID | 战术 | 置信度 | 关联事件 |
+|-------------|------|--------|---------|
+{% if attack_chain and attack_chain.ttp_summary %}
+{% for t in attack_chain.ttp_summary %}
+| {{ t.technique_id or t.raw_id ~ "(未命中白名单)" }} | {{ t.tactic }} | {{ "%.2f"|format(t.confidence) }} | {{ t.event_ids | length }} |
+{% endfor %}
+{% else %}
+| - | - | - | - |
+{% endif %}
 
 ## 四、威胁归因
 

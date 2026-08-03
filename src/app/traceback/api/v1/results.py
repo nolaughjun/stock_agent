@@ -43,11 +43,30 @@ async def get_attack_chain(task_id: str, session: SessionDep, _: ReviewerDep):
 
 
 @router.get("/{task_id}/report")
-async def get_report(task_id: str, session: SessionDep, _: ReviewerDep):
+async def get_report(
+    task_id: str,
+    session: SessionDep,
+    _: ReviewerDep,
+    fmt: str = "pdf",
+):
+    """下载报告 (pdf/md/docx), 从 MinIO 取"""
+    from fastapi import Response
+
+    from src.app.traceback.services import report_service
+
     if not await _ensure_task(session, task_id):
         raise HTTPException(404, detail={"code": "TB-1001", "message": "任务不存在"})
-    # S4: 从 MinIO 取 PDF/Word/MD 并返回 FileResponse
-    return {"task_id": task_id, "message": "报告生成功能 S4 实现", "report_path": None}
+    if fmt not in ("pdf", "md", "docx"):
+        raise HTTPException(400, detail={"code": "TB-1004", "message": "不支持的格式, 可选 pdf/md/docx"})
+    data = await report_service.get_report_from_minio(task_id, fmt)
+    if data is None:
+        raise HTTPException(404, detail={"code": "TB-1005", "message": f"报告未生成或不支持 {fmt} 格式"})
+    media = {"pdf": "application/pdf", "md": "text/markdown",
+             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}[fmt]
+    return Response(
+        content=data, media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{task_id}-report.{fmt}"'},
+    )
 
 
 @router.get("/{task_id}/evidences", response_model=list[EvidenceOut])

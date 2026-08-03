@@ -210,6 +210,7 @@ class TimelineBuilder(AgentBase):
             "is_key_event": False,
             "confidence": d.get("confidence", 0.7),
             "verified": False,
+            "related_assets": d.get("related_assets", []),
         }
 
     def _dedup_sort(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:

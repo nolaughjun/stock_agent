@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     evidence_mock_mode: bool = True
     # 任务调度: asyncio (默认, 进程内) | celery (需安装 celery + worker)
     task_runner: str = "asyncio"
+    # 检查点后端: memory (默认, 进程内) | postgres (生产级, 中断可跨进程恢复)
+    checkpoint_backend: str = "memory"
 
     # ---- 安全 (P1 基础 Token, P4 上 RBAC/LDAP) ----
     api_token: Optional[str] = None             # 为空则不强制鉴权 (仅 dev)

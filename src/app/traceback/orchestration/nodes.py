@@ -83,7 +83,16 @@ async def attribute_node(state: TracebackState) -> dict[str, Any]:
 
 
 async def report_node(state: TracebackState) -> dict[str, Any]:
-    """报告生成 (§4.4). S4 实现: 模板渲染 + 格式转换。"""
+    """报告生成 (§4.4). S4: Reporter 智能体。"""
+    from src.app.traceback.agents.reporter import Reporter
+
+    logger.info("[{}] 报告生成 task={}", "report", state.get("task_id"))
+    agent = Reporter()
+    return await agent.safe_run(state)
+
+
+async def report_stub(state: TracebackState) -> dict[str, Any]:
+    """报告生成 stub (测试用)"""
     logger.info("[{}] 报告生成(stub) task={}", "report", state.get("task_id"))
     return {"stage": "reported", "report_path": None}
 
