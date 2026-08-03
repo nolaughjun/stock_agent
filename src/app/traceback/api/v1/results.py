@@ -8,7 +8,12 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from src.app.traceback.api.deps import ReviewerDep, SessionDep
-from src.app.traceback.repositories import evidence_repo, task_repo
+from src.app.traceback.repositories import (
+    attack_chain_repo,
+    evidence_repo,
+    task_repo,
+    timeline_repo,
+)
 from src.app.traceback.schemas.attack_chain import AttackChainOut
 from src.app.traceback.schemas.evidence import EvidenceOut
 from src.app.traceback.schemas.timeline import TimelineOut
@@ -24,16 +29,17 @@ def _ensure_task(session, task_id):
 async def get_timeline(task_id: str, session: SessionDep, _: ReviewerDep):
     if not await _ensure_task(session, task_id):
         raise HTTPException(404, detail={"code": "TB-1001", "message": "任务不存在"})
-    # S3: 从 MongoDB timeline_events 读取
-    return TimelineOut(task_id=task_id, events=[], key_event_count=0)
+    events = await timeline_repo.get_events(task_id)
+    key_count = await timeline_repo.get_key_event_count(task_id)
+    return TimelineOut(task_id=task_id, events=events, key_event_count=key_count)
 
 
 @router.get("/{task_id}/attack-chain", response_model=AttackChainOut)
 async def get_attack_chain(task_id: str, session: SessionDep, _: ReviewerDep):
     if not await _ensure_task(session, task_id):
         raise HTTPException(404, detail={"code": "TB-1001", "message": "任务不存在"})
-    # S3: 从 PG attack_chains.payload 读取
-    return AttackChainOut(task_id=task_id, chain=None)
+    chain = await attack_chain_repo.get_chain(session, task_id)
+    return AttackChainOut(task_id=task_id, chain=chain)
 
 
 @router.get("/{task_id}/report")

@@ -1,0 +1,40 @@
+{
+  "_comment": "MITRE ATT&CK Enterprise 技术白名单(策展子集)。用于校验 LLM 输出的 technique_id, 未命中则标记 unknown 并降置信(§4.3)。完整 enterprise-attack.json 可后续替换。",
+  "tactics": [
+    "initial_access", "execution", "persistence", "privilege_escalation",
+    "defense_evasion", "credential_access", "discovery", "lateral_movement",
+    "collection", "command_and_control", "exfiltration", "impact"
+  ],
+  "techniques": {
+    "T1566": {"name": "Phishing", "tactic": "initial_access", "subtechniques": {"T1566.001": "Spearphishing Attachment", "T1566.002": "Spearphishing Link"}},
+    "T1078": {"name": "Valid Accounts", "tactic": "initial_access", "subtechniques": {}},
+    "T1190": {"name": "Exploit Public-Facing Application", "tactic": "initial_access", "subtechniques": {}},
+    "T1059": {"name": "Command and Scripting Interpreter", "tactic": "execution", "subtechniques": {"T1059.001": "PowerShell", "T1059.003": "Windows Command Shell"}},
+    "T1106": {"name": "Native API", "tactic": "execution", "subtechniques": {}},
+    "T1053": {"name": "Scheduled Task/Job", "tactic": "execution", "subtechniques": {}},
+    "T1547": {"name": "Boot or Logon Autostart Execution", "tactic": "persistence", "subtechniques": {"T1547.001": "Registry Run Keys"}},
+    "T1136": {"name": "Create Account", "tactic": "persistence", "subtechniques": {}},
+    "T1548": {"name": "Abuse Elevation Control Mechanism", "tactic": "privilege_escalation", "subtechniques": {}},
+    "T1068": {"name": "Exploitation for Privilege Escalation", "tactic": "privilege_escalation", "subtechniques": {}},
+    "T1003": {"name": "OS Credential Dumping", "tactic": "credential_access", "subtechniques": {"T1003.001": "LSASS Memory"}},
+    "T1110": {"name": "Brute Force", "tactic": "credential_access", "subtechniques": {}},
+    "T1057": {"name": "Process Discovery", "tactic": "discovery", "subtechniques": {}},
+    "T1018": {"name": "Remote System Discovery", "tactic": "discovery", "subtechniques": {}},
+    "T1087": {"name": "Account Discovery", "tactic": "discovery", "subtechniques": {}},
+    "T1021": {"name": "Remote Services", "tactic": "lateral_movement", "subtechniques": {"T1021.001": "Remote Desktop Protocol", "T1021.002": "SMB/Windows Admin Shares", "T1021.006": "Windows Remote Management"}},
+    "T1072": {"name": "Software Deployment Tools", "tactic": "lateral_movement", "subtechniques": {}},
+    "T1570": {"name": "Lateral Tool Transfer", "tactic": "lateral_movement", "subtechniques": {}},
+    "T1005": {"name": "Data from Local System", "tactic": "collection", "subtechniques": {}},
+    "T1213": {"name": "Data from Information Repositories", "tactic": "collection", "subtechniques": {}},
+    "T1071": {"name": "Application Layer Protocol", "tactic": "command_and_control", "subtechniques": {"T1071.001": "Web Protocols"}},
+    "T1571": {"name": "Non-Standard Port", "tactic": "command_and_control", "subtechniques": {}},
+    "T1573": {"name": "Encrypted Channel", "tactic": "command_and_control", "subtechniques": {}},
+    "T1041": {"name": "Exfiltration Over C2 Channel", "tactic": "exfiltration", "subtechniques": {}},
+    "T1567": {"name": "Exfiltration Over Web Service", "tactic": "exfiltration", "subtechniques": {}},
+    "T1048": {"name": "Exfiltration Over Alternative Protocol", "tactic": "exfiltration", "subtechniques": {}},
+    "T1486": {"name": "Data Encrypted for Impact", "tactic": "impact", "subtechniques": {}},
+    "T1490": {"name": "Inhibit System Recovery", "tactic": "impact", "subtechniques": {}},
+    "T1489": {"name": "Service Stop", "tactic": "impact", "subtechniques": {}},
+    "T1485": {"name": "Data Destruction", "tactic": "impact", "subtechniques": {}}
+  }
+}

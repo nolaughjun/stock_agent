@@ -15,7 +15,11 @@ import pytest
 from src.app.traceback.adapters.base import BaseAdapter
 from src.app.traceback.adapters.manager import ComponentManager
 from src.app.traceback.orchestration.graph import build_graph
-from src.app.traceback.orchestration.nodes import collect_evidence_stub
+from src.app.traceback.orchestration.nodes import (
+    analyze_chain_stub,
+    build_timeline_stub,
+    collect_evidence_stub,
+)
 from src.app.traceback.orchestration.state import STAGE_PROGRESS
 from src.app.traceback.schemas.attack_chain import AttackChain
 from src.app.traceback.schemas.evidence import EvidenceMeta
@@ -23,7 +27,11 @@ from src.app.traceback.schemas.task import TaskCreate
 from src.app.traceback.schemas.timeline import TimelineEvent
 
 # 业务节点用 stub, 避免触达 DB/适配器; 审核 interrupt 节点为真实实现(被测对象)
-_STUB_NODES = {"collect_evidence": collect_evidence_stub}
+_STUB_NODES = {
+    "collect_evidence": collect_evidence_stub,
+    "build_timeline": build_timeline_stub,
+    "analyze_chain": analyze_chain_stub,
+}
 
 
 # ---------- schemas ----------

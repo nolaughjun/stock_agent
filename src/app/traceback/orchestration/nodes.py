@@ -36,13 +36,31 @@ async def collect_evidence_stub(state: TracebackState) -> dict[str, Any]:
 
 
 async def build_timeline_node(state: TracebackState) -> dict[str, Any]:
-    """时间线构建 (§4.2). S3 实现: LLM 事件提取/排序/关键节点/关联。"""
+    """时间线构建 (§4.2). S3: TimelineBuilder 智能体。"""
+    from src.app.traceback.agents.timeline_builder import TimelineBuilder
+
+    logger.info("[{}] 时间线构建 task={}", "build_timeline", state.get("task_id"))
+    agent = TimelineBuilder()
+    return await agent.safe_run(state)
+
+
+async def build_timeline_stub(state: TracebackState) -> dict[str, Any]:
+    """时间线构建 stub (测试用)"""
     logger.info("[{}] 时间线构建(stub) task={}", "build_timeline", state.get("task_id"))
     return {"stage": "timeline_built", "timeline_events": []}
 
 
 async def analyze_chain_node(state: TracebackState) -> dict[str, Any]:
-    """攻击链分析 (§4.3). S3 实现: 入口/横向/TTP/路径图。"""
+    """攻击链分析 (§4.3). S3: AttackChainAgent 智能体。"""
+    from src.app.traceback.agents.attack_chain import AttackChainAgent
+
+    logger.info("[{}] 攻击链分析 task={}", "analyze_chain", state.get("task_id"))
+    agent = AttackChainAgent()
+    return await agent.safe_run(state)
+
+
+async def analyze_chain_stub(state: TracebackState) -> dict[str, Any]:
+    """攻击链分析 stub (测试用)"""
     logger.info("[{}] 攻击链分析(stub) task={}", "analyze_chain", state.get("task_id"))
     return {"stage": "chain_analyzed", "attack_chain": None}
 

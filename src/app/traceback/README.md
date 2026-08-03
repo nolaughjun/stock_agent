@@ -8,7 +8,7 @@
 |--------|--------|------|------|
 | S1 | M1 基础架构 | ✅ 已完成 | 目录骨架、core、schemas、智能体/适配器基座、LangGraph 编排(含 interrupt 审核)、API、Docker Compose、单测 9/9 通过 |
 | S2 | M2 任务管理+证据收集 | ✅ 已完成 | 证据三段式存储、真实 SIEM/MISP 适配器(+mock 降级)、EvidenceCollector 智能体、task_runner 服务、证据查询 API、单测 18/18 |
-| S3 | M3 时间线+攻击链 | ⏳ 待开发 | 时间线/攻击链智能体、Timesketch、ATT&CK 白名单、TTP 评测 |
+| S3 | M3 时间线+攻击链 | ✅ 已完成 | ATT&CK 白名单、TimelineBuilder(LLM+规则兜底)、AttackChainAgent(入口反向溯源/横向/TTP/路径图)、timeline/attack-chain API、单测 28/28 |
 | S4 | M4 报告+MVP | ⏳ 待开发 | 报告生成、PDF/Word 导出、PG checkpointer、UAT-001 |
 
 ## 已交付(M1)
