@@ -97,19 +97,27 @@ async def update_task(
     return await get_task(session, task_id)
 
 
+# 阶段 → 任务状态映射 (对齐编排状态机, P1~P3 全阶段)
+_STAGE_STATUS = {
+    "done": "done",
+    "review_timeline": "reviewing", "review_chain": "reviewing",
+    "review_attribution": "reviewing", "knowledge_review": "reviewing",
+    "collecting": "analyzing", "timeline_built": "analyzing",
+    "chain_analyzed": "analyzing", "attributed": "analyzing",
+    "reported": "analyzing", "knowledge_sunk": "analyzing",  # reported 后仍有知识流程
+    "created": "created",
+}
+
+
 async def set_stage(
     session: AsyncSession, task_id: str, stage: str, status: Optional[TaskStatus] = None
 ) -> None:
-    """编排运行器同步业务状态到 PG (进度可查询/可恢复)"""
-    values: dict[str, Any] = {"current_stage": stage}
-    if status:
-        values["status"] = status
-    if stage == "reported":
-        values["status"] = "done"
-    elif stage in ("review_timeline", "review_chain"):
-        values["status"] = "reviewing"
-    elif stage in ("collecting", "timeline_built", "chain_analyzed", "attributed"):
-        values["status"] = "analyzing"
+    """编排运行器同步业务状态到 PG (进度可查询/可恢复)。
+
+    status 显式传入时优先; 否则按 stage 映射 (review*→reviewing, done→done, 其余→analyzing)。
+    """
+    derived = _STAGE_STATUS.get(stage, "analyzing")
+    values: dict[str, Any] = {"current_stage": stage, "status": status or derived}
     await session.execute(
         tasks_tbl.update().where(tasks_tbl.c.task_id == task_id).values(**values)
     )

@@ -14,7 +14,8 @@ TaskStatus = Literal["created", "analyzing", "reviewing", "done", "failed"]
 AnalysisStage = Literal[
     "created", "collecting", "timeline_built",
     "review_timeline", "chain_analyzed",
-    "review_chain", "attributed", "reported",
+    "review_chain", "attributed", "review_attribution", "reported",
+    "knowledge_sunk", "knowledge_review", "done",
 ]
 
 
@@ -77,5 +78,5 @@ class TaskProgress(BaseModel):
     current_stage: AnalysisStage
     progress_percent: int = Field(..., ge=0, le=100, description="进度百分比")
     awaiting_review: bool = Field(False, description="是否等待人工审核")
-    review_stage: Optional[Literal["timeline", "attack_chain", "report"]] = None
+    review_stage: Optional[Literal["timeline", "attack_chain", "attribution", "knowledge"]] = None
     message: Optional[str] = None

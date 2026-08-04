@@ -71,7 +71,7 @@ async def run_uat(base: str) -> None:
         print("      审核① approve ✓")
 
         # 4. 审核② (攻击链)
-        print("[4/6] 等待攻击链分析 → 审核②...")
+        print("[4/8] 等待攻击链分析 → 审核②...")
         stage = await wait_for_review(client, task_id)
         assert stage == "attack_chain", f"期望 attack_chain 审核, 实际 {stage}"
         r = await client.post(f"{PREFIX}/tasks/{task_id}/review", json={
@@ -80,33 +80,61 @@ async def run_uat(base: str) -> None:
         r.raise_for_status()
         print("      审核② approve ✓")
 
-        # 5. 等待报告生成
-        print("[5/6] 等待报告生成...")
+        # 5. 审核③ (归因)
+        print("[5/8] 等待归因分析 → 审核③...")
+        stage = await wait_for_review(client, task_id)
+        assert stage == "attribution", f"期望 attribution 审核, 实际 {stage}"
+        attr = (await client.get(f"{PREFIX}/tasks/{task_id}/attribution")).json()
+        r = await client.post(f"{PREFIX}/tasks/{task_id}/review", json={
+            "stage": "attribution", "action": "approve", "reviewer": "uat", "comments": "归因确认",
+        })
+        r.raise_for_status()
+        print(f"      审核③ approve ✓ (归因: {attr.get('attribution', {}).get('threat_actor', '未归因')})")
+
+        # 6. 等待报告生成
+        print("[6/8] 等待报告生成...")
         deadline = time.time() + REVIEW_POLL_TIMEOUT
         while time.time() < deadline:
             r = await client.get(f"{PREFIX}/tasks/{task_id}/progress")
             p = r.json()
-            if p["current_stage"] == "reported":
+            if p["current_stage"] in ("reported", "knowledge_review"):
                 break
             if p["status"] == "failed":
                 raise RuntimeError("报告阶段失败")
             await asyncio.sleep(POLL_INTERVAL)
 
-        # 6. 断言报告完整度
-        print("[6/6] 校验报告完整度...")
+        # 7. 审核④ (知识沉淀)
+        print("[7/8] 等待知识沉淀 → 审核④...")
+        stage = await wait_for_review(client, task_id)
+        assert stage == "knowledge", f"期望 knowledge 审核, 实际 {stage}"
+        r = await client.post(f"{PREFIX}/tasks/{task_id}/review", json={
+            "stage": "knowledge", "action": "approve", "reviewer": "uat", "comments": "知识沉淀确认",
+        })
+        r.raise_for_status()
+        # 注: 沉淀的案例为 draft, 可经 /knowledge/cases/{id}/publish 发布参与检索
+        print("      审核④ approve ✓")
+
+        # 8. 断言报告完整度 + 知识闭环
+        print("[8/8] 校验报告完整度与知识闭环...")
         tl = (await client.get(f"{PREFIX}/tasks/{task_id}/timeline")).json()
         ac = (await client.get(f"{PREFIX}/tasks/{task_id}/attack-chain")).json()
         rpt = (await client.get(f"{PREFIX}/tasks/{task_id}/report?fmt=md")).content.decode("utf-8")
+        # 知识闭环: 相似案例可检索
+        similar = (await client.post(f"{PREFIX}/knowledge/cases/search-similar", json={
+            "attack_type": "ransomware", "ttps": ["T1486"], "top_k": 3,
+        })).json()
 
         checks = {
             "时间线非空": len(tl["events"]) > 0,
             "含关键事件": tl["key_event_count"] > 0,
             "攻击链有入口": ac["chain"] and ac["chain"]["entry_point"] is not None,
+            "归因有结果": attr.get("attribution") is not None,
             "报告含事件概述": "事件概述" in rpt,
             "报告含攻击链分析": "攻击链分析" in rpt,
             "报告含处置建议": "处置建议" in rpt,
             "报告含 ATT&CK 技术": "T1566" in rpt or "T1486" in rpt,
             "报告含路径图": "<svg" in rpt,
+            "知识闭环-相似案例可检索": len(similar.get("cases", [])) > 0,
         }
         elapsed = time.time() - started
         print(f"\n耗时: {elapsed:.1f}s (NFR-004 要求 < 1800s)")

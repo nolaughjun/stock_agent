@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-ReviewStage = Literal["timeline", "attack_chain", "report", "attribution"]
+ReviewStage = Literal["timeline", "attack_chain", "report", "attribution", "knowledge"]
 ReviewAction = Literal["approve", "revise"]
 
 
