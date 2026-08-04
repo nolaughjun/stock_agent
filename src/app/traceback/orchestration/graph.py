@@ -20,11 +20,14 @@ from langgraph.graph import END, START, StateGraph
 
 from src.app.traceback.orchestration.nodes import (
     DEFAULT_NODES,
+    END_NODE,
     review_attribution_node,
     review_chain_node,
+    review_knowledge_node,
     review_timeline_node,
     route_after_review_attribution,
     route_after_review_chain,
+    route_after_review_knowledge,
     route_after_review_timeline,
 )
 from src.app.traceback.orchestration.state import TracebackState
@@ -56,6 +59,8 @@ def build_graph(
     graph.add_node("attribute", nodes["attribute"])
     graph.add_node("review_attribution", review_attribution_node)
     graph.add_node("report", nodes["report"])
+    graph.add_node("knowledge_sink", nodes["knowledge_sink"])
+    graph.add_node("review_knowledge", review_knowledge_node)
 
     # 边
     graph.add_edge(START, "collect_evidence")
@@ -88,7 +93,15 @@ def build_graph(
         {"report": "report", "attribute": "attribute"},
     )
 
-    graph.add_edge("report", END)
+    graph.add_edge("report", "knowledge_sink")
+    graph.add_edge("knowledge_sink", "review_knowledge")
+
+    # 审核④: approve → END; revise → knowledge_sink(重新沉淀)
+    graph.add_conditional_edges(
+        "review_knowledge",
+        route_after_review_knowledge,
+        {END_NODE: END, "knowledge_sink": "knowledge_sink"},
+    )
 
     return graph.compile(checkpointer=checkpointer)
 

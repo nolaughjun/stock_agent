@@ -20,6 +20,7 @@ from src.app.traceback.orchestration.nodes import (
     attribute_stub,
     build_timeline_stub,
     collect_evidence_stub,
+    knowledge_sink_stub,
     report_stub,
 )
 from src.app.traceback.orchestration.state import STAGE_PROGRESS
@@ -35,6 +36,7 @@ _STUB_NODES = {
     "analyze_chain": analyze_chain_stub,
     "attribute": attribute_stub,
     "report": report_stub,
+    "knowledge_sink": knowledge_sink_stub,
 }
 
 
@@ -118,7 +120,7 @@ async def test_manager_degrades_on_failure():
 
 @pytest.mark.asyncio
 async def test_graph_interrupt_and_resume():
-    """核心: 审核①②③ interrupt→approve 全链路恢复→END"""
+    """核心: 审核①②③④ interrupt→approve 全链路恢复→END"""
     graph = build_graph(node_overrides=_STUB_NODES)
     config = {"configurable": {"thread_id": "t-test"}}
     from langgraph.types import Command
@@ -143,11 +145,16 @@ async def test_graph_interrupt_and_resume():
     snapshot = await graph.aget_state(config)
     assert "review_attribution" in snapshot.next, "应在审核③(归因)处暂停"
 
-    # 4. approve③ → END
+    # 4. approve③ → report → knowledge_sink → 审核④(知识) interrupt
+    await _approve()
+    snapshot = await graph.aget_state(config)
+    assert "review_knowledge" in snapshot.next, "应在审核④(知识)处暂停"
+
+    # 5. approve④ → END
     await _approve()
     snapshot = await graph.aget_state(config)
     assert snapshot.next == (), "应已到达 END"
-    assert snapshot.values.get("stage") == "reported"
+    assert snapshot.values.get("stage") == "done"
 
 
 @pytest.mark.asyncio
@@ -169,10 +176,11 @@ def test_stage_progress_monotonic():
     """进度百分比随阶段递增"""
     order = ["created", "collecting", "timeline_built", "review_timeline",
              "chain_analyzed", "review_chain", "attributed",
-             "review_attribution", "reported"]
+             "review_attribution", "reported", "knowledge_sunk",
+             "knowledge_review", "done"]
     vals = [STAGE_PROGRESS[s] for s in order]
     assert vals == sorted(vals)
-    assert STAGE_PROGRESS["reported"] == 100
+    assert STAGE_PROGRESS["done"] == 100
 
 
 @pytest.mark.asyncio
@@ -210,11 +218,19 @@ async def test_runner_effective_stage_after_interrupt():
         f"审核②approve 后应停在 review_attribution, 实际 {state['stage']}"
     )
 
-    # 恢复 approve③ → END, stage=reported
+    # 恢复 approve③ → report → knowledge_sink → 审核④(知识)
     state = await runner.resume_with_decision(
         "t-runner-stage", {"action": "approve", "reviewer": "tester"}, graph=graph
     )
-    assert state["stage"] == "reported"
+    assert state["stage"] == "knowledge_review", (
+        f"审核③approve 后应停在 knowledge_review, 实际 {state['stage']}"
+    )
+
+    # 恢复 approve④ → END, stage=done
+    state = await runner.resume_with_decision(
+        "t-runner-stage", {"action": "approve", "reviewer": "tester"}, graph=graph
+    )
+    assert state["stage"] == "done"
 
 
 # ---------- report template ----------

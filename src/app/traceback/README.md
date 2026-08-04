@@ -13,6 +13,7 @@
 | P2 加固 | 质量门/测试 | ✅ 已完成 | TTP 黄金样本评测(F1>0.8)、API 集成测试(11)、SIEM 真实路径、ruff 全清、UAT 脚本、单测 52/52 |
 | P2-S5 | 归因智能体 | ✅ 已完成 | AttributionAgent(三因子加权+LLM画像)、OpenCTI(GraphQL+种子降级)、相似案例匹配、归因审核③、/attribution API |
 | P2-S6 | 深度取证 | ✅ 已完成 | Zeek/Velociraptor/YARA/CAPE/Volatility 适配器(mock降级)+DeepForensicsCollector 异步调度 |
+| P3 | 知识沉淀与智能应用 | ✅ 已完成 | 五大知识库(案例/IOC/TTP/Playbook/文章)、KnowledgeSink 自动提取、知识审核④、RAG 问答(强制引用/拒答)、知识 API(15 端点)、旁路 IOC 匹配、单测 69/69 |
 
 ## P1 MVP 完成总结
 

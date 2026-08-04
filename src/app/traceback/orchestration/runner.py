@@ -21,6 +21,7 @@ _INTERRUPT_STAGE: dict[str, str] = {
     "review_timeline": "review_timeline",
     "review_chain": "review_chain",
     "review_attribution": "review_attribution",
+    "review_knowledge": "knowledge_review",
 }
 
 

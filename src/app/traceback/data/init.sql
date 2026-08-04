@@ -92,3 +92,58 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_tasks_update ON traceback_tasks;
 CREATE TRIGGER trg_tasks_update BEFORE UPDATE ON traceback_tasks
     FOR EACH ROW EXECUTE FUNCTION trg_set_update_time();
+
+-- ============================================================
+-- P3 知识库表
+-- ============================================================
+
+-- TTP 知识 (MITRE 关联 + 检测/处置 tips + 案例反向引用)
+CREATE TABLE IF NOT EXISTS ttp_knowledge (
+    ttp_id           TEXT PRIMARY KEY,
+    mitre_tactic     TEXT NOT NULL,
+    mitre_technique  TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    description      TEXT,
+    detection_tips   JSONB DEFAULT '[]',
+    response_tips    JSONB DEFAULT '[]',
+    source_cases     JSONB DEFAULT '[]',
+    create_time      TIMESTAMPTZ DEFAULT now()
+);
+
+-- 处置方案库 (Playbook)
+CREATE TABLE IF NOT EXISTS response_playbooks (
+    playbook_id      TEXT PRIMARY KEY,
+    source_case_id   TEXT,
+    name             TEXT NOT NULL,
+    description      TEXT,
+    attack_type      TEXT NOT NULL,
+    steps            JSONB NOT NULL,
+    prerequisites    JSONB DEFAULT '[]',
+    applicable_assets JSONB DEFAULT '[]',
+    effectiveness    REAL DEFAULT 0,
+    side_effects     JSONB DEFAULT '[]',
+    author           TEXT DEFAULT 'system',
+    version          TEXT DEFAULT '1.0',
+    usage_count      INT DEFAULT 0,
+    success_rate     REAL DEFAULT 0,
+    create_time      TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_playbook_attack_type ON response_playbooks(attack_type);
+
+-- IOC 知识元数据 (图谱关系在内存/Neo4j, 元数据冗余 PG 便于查询)
+CREATE TABLE IF NOT EXISTS ioc_knowledge (
+    ioc_id        TEXT PRIMARY KEY,
+    source_case_id TEXT,
+    ioc_type      TEXT NOT NULL,
+    ioc_value     TEXT NOT NULL,
+    threat_type   TEXT DEFAULT '',
+    malware_family TEXT,
+    threat_actor  TEXT,
+    campaign      TEXT,
+    context       TEXT DEFAULT '',
+    confidence    REAL DEFAULT 0.5,
+    false_positive BOOLEAN DEFAULT FALSE,
+    tags          JSONB DEFAULT '[]',
+    create_time   TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ioc_value ON ioc_knowledge(ioc_type, ioc_value);

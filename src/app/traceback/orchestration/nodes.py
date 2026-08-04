@@ -14,6 +14,9 @@ from langgraph.types import interrupt
 from src.app.traceback.core.logging import logger
 from src.app.traceback.orchestration.state import TracebackState
 
+# conditional edge 返回值: 审核④ approve → 结束
+END_NODE = "done"
+
 # 节点函数签名: (state) -> partial state
 NodeFn = Callable[[TracebackState], dict[str, Any]]
 
@@ -21,15 +24,43 @@ NodeFn = Callable[[TracebackState], dict[str, Any]]
 # ---- 业务节点 stub (S2~S4 替换为真实智能体) ----
 
 async def collect_evidence_node(state: TracebackState) -> dict[str, Any]:
-    """证据收集 (§4.1). 基础证据(EvidenceCollector) + 深度取证(DeepForensicsCollector)。"""
+    """证据收集 (§4.1). 基础证据 + 深度取证 + P3 IOC 自动匹配(旁路注入)。"""
     from src.app.traceback.agents.evidence_collector import EvidenceCollector
     from src.app.traceback.services.deep_forensics import DeepForensicsCollector
 
     logger.info("[{}] 证据收集 task={}", "collect_evidence", state.get("task_id"))
     basic = await EvidenceCollector().safe_run(state)
     deep = await DeepForensicsCollector().run(state)
-    # 合并: 基础 evidence_ids + 深度 deep_evidence_ids
-    return {**basic, "deep_evidence_ids": deep.get("deep_evidence_ids", [])}
+    # P3 旁路注入: IOC 自动匹配 (F-008-03), best-effort 不阻塞
+    suggestion = await _knowledge_ioc_match(state)
+    return {
+        **basic,
+        "deep_evidence_ids": deep.get("deep_evidence_ids", []),
+        **({"knowledge_suggestion": suggestion} if suggestion else {}),
+    }
+
+
+async def _knowledge_ioc_match(state: TracebackState) -> dict[str, Any] | None:
+    """IOC 自动匹配: 任务资产 → 查知识库 IOC → 命中标注 (F-008-03)"""
+    try:
+        from src.app.traceback.core.db import session_scope
+        from src.app.traceback.repositories import knowledge_repo, task_repo
+
+        task_id = state.get("task_id")
+        async with session_scope() as session:
+            task = await task_repo.get_task(session, task_id)
+        if not task:
+            return None
+        iocs = [{"type": "ip", "value": ip} for ip in (task.get("asset_ips") or [])]
+        if not iocs:
+            return None
+        async with session_scope() as session:
+            matches = await knowledge_repo.batch_query_iocs(session, iocs)
+        hits = [m for m in matches if m.get("found")]
+        return {"ioc_matches": hits} if hits else None
+    except Exception as e:  # noqa: BLE001
+        logger.debug("IOC 自动匹配跳过: {}", str(e)[:80])
+        return None
 
 
 async def collect_evidence_stub(state: TracebackState) -> dict[str, Any]:
@@ -105,6 +136,21 @@ async def report_stub(state: TracebackState) -> dict[str, Any]:
     return {"stage": "reported", "report_path": None}
 
 
+async def knowledge_sink_node(state: TracebackState) -> dict[str, Any]:
+    """知识沉淀 (§6). P3: KnowledgeSink 自动提取案例/IOC/TTP/Playbook 草稿。"""
+    from src.app.traceback.agents.knowledge_sink import KnowledgeSink
+
+    logger.info("[{}] 知识沉淀 task={}", "knowledge_sink", state.get("task_id"))
+    agent = KnowledgeSink()
+    return await agent.safe_run(state)
+
+
+async def knowledge_sink_stub(state: TracebackState) -> dict[str, Any]:
+    """知识沉淀 stub (测试用)"""
+    logger.info("[{}] 知识沉淀(stub) task={}", "knowledge_sink", state.get("task_id"))
+    return {"stage": "knowledge_sunk", "pending_knowledge": {"case_id": None, "note": "stub"}}
+
+
 # ---- 人工审核 interrupt 节点 (真实实现) ----
 
 def _review(stage_name: str, next_approve: str, next_revise: str) -> NodeFn:
@@ -146,6 +192,8 @@ review_timeline_node = _review("timeline", "chain_analyzed", "collecting")
 review_chain_node = _review("attack_chain", "attributed", "chain_analyzed")
 # 审核③: 归因 approve → reported(报告); revise → 重算归因
 review_attribution_node = _review("attribution", "reported", "attributed")
+# 审核④: 知识沉淀 approve → done; revise → 重新沉淀
+review_knowledge_node = _review("knowledge", "done", "knowledge_sunk")
 
 
 # ---- 条件路由 ----
@@ -168,6 +216,12 @@ def route_after_review_attribution(state: TracebackState) -> str:
     return "report" if decision.get("action") == "approve" else "attribute"
 
 
+def route_after_review_knowledge(state: TracebackState) -> str:
+    """审核④后: approve → END; revise → knowledge_sink(重新沉淀)"""
+    decision = state.get("review_decision") or {}
+    return END_NODE if decision.get("action") == "approve" else "knowledge_sink"
+
+
 # 默认业务节点注册表 (审核 interrupt 节点固定, 不可覆盖)
 DEFAULT_NODES: dict[str, NodeFn] = {
     "collect_evidence": collect_evidence_node,
@@ -175,4 +229,5 @@ DEFAULT_NODES: dict[str, NodeFn] = {
     "analyze_chain": analyze_chain_node,
     "attribute": attribute_node,
     "report": report_node,
+    "knowledge_sink": knowledge_sink_node,
 }

@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.app.traceback.adapters.manager import get_manager
 from src.app.traceback.adapters.registry import register_defaults
-from src.app.traceback.api.v1 import analysis, results, tasks
+from src.app.traceback.api.v1 import analysis, knowledge, results, tasks
 from src.app.traceback.core.config import settings
 from src.app.traceback.core.db import close_all
 from src.app.traceback.core.logging import logger
@@ -39,6 +39,16 @@ async def lifespan(app: FastAPI):
     register_defaults(manager)
     health = await manager.initialize()
     logger.info("适配器健康状态: {}", health)
+
+    # P3 知识库种子加载 (库为空时)
+    try:
+        from src.app.traceback.core.db import session_scope
+        from src.app.traceback.repositories import knowledge_repo
+
+        async with session_scope() as session:
+            await knowledge_repo.seed_if_empty(session)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("知识库种子加载跳过: {}", str(e)[:100])
 
     yield
 
@@ -66,6 +76,7 @@ API_PREFIX = "/api/v1/traceback"
 app.include_router(tasks.router, prefix=API_PREFIX)
 app.include_router(analysis.router, prefix=API_PREFIX)
 app.include_router(results.router, prefix=API_PREFIX)
+app.include_router(knowledge.router, prefix=API_PREFIX)
 
 
 @app.get("/health", tags=["系统"])

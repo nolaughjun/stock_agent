@@ -1,0 +1,68 @@
+{
+  "_comment": "知识库种子数据 (03_phase3_design.md §3)。Playbook + 知识文章 + IOC 图谱种子, 供处置推荐/IOC匹配/RAG问答在无真实知识库时降级使用。案例库种子见 seed_cases.json。",
+  "playbooks": [
+    {
+      "playbook_id": "pb-ransomware-001",
+      "name": "勒索病毒标准处置流程",
+      "description": "钓鱼入口勒索病毒的端到端处置",
+      "attack_type": "ransomware",
+      "steps": [
+        {"step_id": "s1", "order": 1, "action_type": "isolate", "description": "立即隔离受感染主机, 切断网络"},
+        {"step_id": "s2", "order": 2, "action_type": "investigate", "description": "排查攻击入口(钓鱼邮件/RDP)"},
+        {"step_id": "s3", "order": 3, "action_type": "eradicate", "description": "清除恶意样本与持久化项"},
+        {"step_id": "s4", "order": 4, "action_type": "recover", "description": "从备份恢复加密数据"},
+        {"step_id": "s5", "order": 5, "action_type": "harden", "description": "封禁C2, 重置凭据, 加固邮件网关"}
+      ],
+      "effectiveness": 0.88, "usage_count": 42, "success_rate": 0.85
+    },
+    {
+      "playbook_id": "pb-apt-001",
+      "name": "APT 定向攻击处置流程",
+      "description": "针对定向窃密攻击的处置",
+      "attack_type": "apt",
+      "steps": [
+        {"step_id": "s1", "order": 1, "action_type": "isolate", "description": "隔离受控主机"},
+        {"step_id": "s2", "order": 2, "action_type": "investigate", "description": "溯源后门与持久化机制"},
+        {"step_id": "s3", "order": 3, "action_type": "eradicate", "description": "清除植入与后门"},
+        {"step_id": "s4", "order": 4, "action_type": "harden", "description": "修复入口, 加强终端EDR监控"}
+      ],
+      "effectiveness": 0.82, "usage_count": 18, "success_rate": 0.78
+    },
+    {
+      "playbook_id": "pb-cryptomining-001",
+      "name": "挖矿程序处置流程",
+      "attack_type": "cryptomining",
+      "steps": [
+        {"step_id": "s1", "order": 1, "action_type": "eradicate", "description": "清除挖矿进程"},
+        {"step_id": "s2", "order": 2, "action_type": "harden", "description": "修复暴露服务漏洞, 限制出网"}
+      ],
+      "effectiveness": 0.9, "usage_count": 25, "success_rate": 0.92
+    }
+  ],
+  "articles": [
+    {
+      "article_id": "art-001",
+      "title": "勒索病毒分析技巧总结",
+      "content": "# 勒索病毒分析技巧\n\n勒索病毒常通过钓鱼邮件(T1566.001)投递, PowerShell(T1059.001)落地, Cobalt Strike横向移动(T1021.001), 最终全盘加密(T1486)。关键IOC包括C2 IP与DGA域名。处置需先隔离再恢复备份。",
+      "category": "methodology",
+      "tags": ["勒索病毒", "分析技巧", "T1486"],
+      "related_cases": []
+    },
+    {
+      "article_id": "art-002",
+      "title": "Cobalt Strike 检测方法",
+      "content": "# Cobalt Strike 检测\n\n关注固定间隔C2信标、心跳流量、Malleable C2特征。YARA规则与内存malfind可发现注入的beacon。",
+      "category": "technique",
+      "tags": ["Cobalt Strike", "检测", "C2"],
+      "related_cases": []
+    }
+  ],
+  "ioc_graph": [
+    {"ioc_id": "ioc-001", "ioc_type": "ip", "ioc_value": "203.0.113.55", "threat_type": "C2",
+     "malware_family": "RansomX", "threat_actor": "RansomX Operator", "confidence": 0.92},
+    {"ioc_id": "ioc-002", "ioc_type": "domain", "ioc_value": "malicious-c2.example", "threat_type": "C2",
+     "malware_family": "RansomX", "threat_actor": "RansomX Operator", "confidence": 0.88},
+    {"ioc_id": "ioc-003", "ioc_type": "ip", "ioc_value": "198.51.100.23", "threat_type": "C2",
+     "malware_family": "custom_implant", "threat_actor": "APT-XX (Espionage)", "confidence": 0.85}
+  ]
+}

@@ -12,6 +12,7 @@ Stage = Literal[
     "created", "collecting", "timeline_built",
     "review_timeline", "chain_analyzed",
     "review_chain", "attributed", "review_attribution", "reported",
+    "knowledge_sunk", "knowledge_review", "done",
 ]
 
 
@@ -28,6 +29,8 @@ class TracebackState(TypedDict, total=False):
     attribution: dict[str, Any] | None         # AttributionResult (P2 完整)
     similar_cases: list[dict[str, Any]]        # 相似案例匹配结果
     deep_evidence_ids: Annotated[list[str], add]  # 深度取证产出证据 (P2)
+    knowledge_suggestion: dict[str, Any] | None   # P3 知识应用注入(相似案例/处置/IOC匹配)
+    pending_knowledge: dict[str, Any] | None      # P3 待沉淀知识草稿
     report_path: str | None
     stage: Stage
     errors: Annotated[list[str], add]
@@ -45,10 +48,13 @@ STAGE_PROGRESS: dict[Stage, int] = {
     "chain_analyzed": 65,
     "review_chain": 70,
     "attributed": 83,
-    "review_attribution": 88,
-    "reported": 100,
+    "review_attribution": 86,
+    "reported": 90,
+    "knowledge_sunk": 95,
+    "knowledge_review": 97,
+    "done": 100,
 }
 
 AWAITING_REVIEW_STAGES: set[Stage] = {
-    "review_timeline", "review_chain", "review_attribution",
+    "review_timeline", "review_chain", "review_attribution", "knowledge_review",
 }
