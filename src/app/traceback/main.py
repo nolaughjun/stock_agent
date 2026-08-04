@@ -18,10 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.app.traceback.adapters.manager import get_manager
 from src.app.traceback.adapters.registry import register_defaults
-from src.app.traceback.api.v1 import analysis, knowledge, results, tasks
+from src.app.traceback.api.v1 import analysis, auth, knowledge, results, tasks
 from src.app.traceback.core.config import settings
 from src.app.traceback.core.db import close_all
 from src.app.traceback.core.logging import logger
+from src.app.traceback.core.metrics import render_metrics
 from src.app.traceback.orchestration.checkpointer import init_checkpointer
 from src.app.traceback.orchestration.graph import set_checkpointer
 
@@ -73,6 +74,7 @@ app.add_middleware(
 )
 
 API_PREFIX = "/api/v1/traceback"
+app.include_router(auth.router, prefix=API_PREFIX)
 app.include_router(tasks.router, prefix=API_PREFIX)
 app.include_router(analysis.router, prefix=API_PREFIX)
 app.include_router(results.router, prefix=API_PREFIX)
@@ -82,6 +84,14 @@ app.include_router(knowledge.router, prefix=API_PREFIX)
 @app.get("/health", tags=["系统"])
 async def health():
     return {"status": "ok", "app": settings.app_name, "version": settings.app_version}
+
+
+@app.get("/metrics", tags=["系统"])
+async def metrics():
+    """Prometheus 指标 (OBS-002)"""
+    from fastapi import Response
+
+    return Response(content=render_metrics(), media_type="text/plain; version=0.0.4")
 
 
 if __name__ == "__main__":

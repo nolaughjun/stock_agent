@@ -36,9 +36,13 @@ def new_task_id() -> str:
 
 async def create_task(session: AsyncSession, payload: TaskCreate) -> str:
     task_id = new_task_id()
+    from src.app.traceback.core.tenant import get_tenant_id
+
+    tenant_id = get_tenant_id() or "default"
     await session.execute(
         tasks_tbl.insert().values(
             task_id=task_id,
+            tenant_id=tenant_id,
             task_name=payload.task_name,
             description=payload.description,
             status="created",
@@ -57,8 +61,14 @@ async def create_task(session: AsyncSession, payload: TaskCreate) -> str:
 
 
 async def get_task(session: AsyncSession, task_id: str) -> Optional[dict[str, Any]]:
+    from src.app.traceback.core.tenant import get_tenant_id
+
+    cond = tasks_tbl.c.task_id == task_id
+    tenant_id = get_tenant_id()
+    if tenant_id:  # 租户隔离: 仅本租户可见 (SEC-005)
+        cond = and_(cond, tasks_tbl.c.tenant_id == tenant_id)
     row = (await session.execute(
-        select(tasks_tbl).where(tasks_tbl.c.task_id == task_id)
+        select(tasks_tbl).where(cond)
     )).mappings().first()
     return dict(row) if row else None
 
@@ -70,7 +80,12 @@ async def list_tasks(
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict[str, Any]], int]:
+    from src.app.traceback.core.tenant import get_tenant_id
+
     cond = tasks_tbl.c.task_id.isnot(None)
+    tenant_id = get_tenant_id()
+    if tenant_id:  # 租户隔离
+        cond = and_(cond, tasks_tbl.c.tenant_id == tenant_id)
     if status:
         cond = and_(cond, tasks_tbl.c.status == status)
     total = (await session.execute(

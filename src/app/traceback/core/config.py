@@ -77,8 +77,16 @@ class Settings(BaseSettings):
     # 检查点后端: memory (默认, 进程内) | postgres (生产级, 中断可跨进程恢复)
     checkpoint_backend: str = "memory"
 
-    # ---- 安全 (P1 基础 Token, P4 上 RBAC/LDAP) ----
-    api_token: Optional[str] = None             # 为空则不强制鉴权 (仅 dev)
+    # ---- 安全 (P1 基础 Token, P4 JWT/RBAC) ----
+    api_token: Optional[str] = None             # P1 兼容; P4 用 JWT
+    jwt_secret: Optional[str] = None            # JWT 签名密钥 (生产由 Vault/K8s Secret 注入)
+    jwt_algorithm: str = "HS256"
+    # LDAP/OAuth2 外部集成 (P4 脚手架, 按需配置)
+    ldap_url: Optional[str] = None
+    oauth2_authorize_url: Optional[str] = None
+    oauth2_token_url: Optional[str] = None
+    oauth2_client_id: Optional[str] = None
+    oauth2_client_secret: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

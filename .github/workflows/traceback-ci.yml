@@ -1,0 +1,58 @@
+# 溯源分析系统 CI (P4, 对齐 04_phase4_design.md §5.4)
+# lint + 单测 + 安全扫描 + 镜像构建
+name: traceback-ci
+
+on:
+  push:
+    paths: ["src/app/traceback/**", ".github/workflows/traceback-ci.yml"]
+  pull_request:
+    paths: ["src/app/traceback/**"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install uv
+      - run: uv pip install --system -r src/app/traceback/requirements-traceback.txt pytest pytest-asyncio ruff
+        env: {UV_LINK_MODE: copy}
+      # 代码质量
+      - run: ruff check src/app/traceback
+      # 单元测试 (确定性: conftest 禁用 LLM)
+      - run: pytest src/app/traceback/tests/ -q --tb=short
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      # SAST
+      - run: pip install bandit pip-audit
+      - run: bandit -r src/app/traceback -ll || true   # 中高危告警
+      # 依赖 CVE 扫描
+      - run: pip-audit -r src/app/traceback/requirements-traceback.txt || true
+
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install pip-licenses
+      # 输出依赖 License 清单, 人工审查 AGPL/GPL 组件 (§6.1)
+      - run: pip-licenses --from=meta --format=csv --with-license-file || true
+
+  build:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: src/app/traceback/deploy/Dockerfile
+          push: false
+          tags: traceback:${{ github.sha }}

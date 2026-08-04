@@ -14,6 +14,15 @@
 | P2-S5 | 归因智能体 | ✅ 已完成 | AttributionAgent(三因子加权+LLM画像)、OpenCTI(GraphQL+种子降级)、相似案例匹配、归因审核③、/attribution API |
 | P2-S6 | 深度取证 | ✅ 已完成 | Zeek/Velociraptor/YARA/CAPE/Volatility 适配器(mock降级)+DeepForensicsCollector 异步调度 |
 | P3 | 知识沉淀与智能应用 | ✅ 已完成 | 五大知识库(案例/IOC/TTP/Playbook/文章)、KnowledgeSink 自动提取、知识审核④、RAG 问答(强制引用/拒答)、知识 API(15 端点)、旁路 IOC 匹配、单测 69/69 |
+| P3 评审 | 状态一致性加固 | ✅ 已完成 | 修复 5 个审核③④接入后的状态映射/Schema bug、知识 API 集成测试、UAT 扩展审核①②③④ |
+| P4 | 企业级生产化 | ✅ 已完成 | 多租户隔离、JWT+RBAC(6角色)、认证 API、审计日志、Prometheus 指标、Dockerfile/K8s/CI、单测 93/93 |
+
+## P4 生产化完成 (全阶段闭环)
+
+四阶段全部完成。P4 新增企业级能力：
+- **安全**: JWT(access/refresh + jti 防重放) + bcrypt 密码 + 6 角色 RBAC + 多租户行级隔离(tenant_id) + 操作审计
+- **可观测**: 轻量 Prometheus 指标(/metrics, 任务计数/阶段耗时/LLM调用/适配器错误)
+- **部署**: Dockerfile + K8s manifests(API 3副本+Worker HPA+ServiceMonitor) + CI(lint/单测/安全扫描/License)
 
 ## P1 MVP 完成总结
 

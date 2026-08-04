@@ -7,6 +7,7 @@
 -- 溯源任务
 CREATE TABLE IF NOT EXISTS traceback_tasks (
     task_id          TEXT PRIMARY KEY,
+    tenant_id        TEXT NOT NULL DEFAULT 'default',  -- P4 多租户
     task_name        TEXT NOT NULL,
     description      TEXT,
     status           TEXT NOT NULL,          -- created/analyzing/reviewing/done/failed
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS traceback_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON traceback_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_update_time ON traceback_tasks(update_time);
+CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON traceback_tasks(tenant_id);
 
 -- 证据引用 (PG 只存轻量引用, 原始数据在 MinIO, 元数据在 Mongo)
 CREATE TABLE IF NOT EXISTS evidences (
@@ -147,3 +149,21 @@ CREATE TABLE IF NOT EXISTS ioc_knowledge (
     create_time   TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_ioc_value ON ioc_knowledge(ioc_type, ioc_value);
+
+-- ============================================================
+-- P4 安全: 操作审计日志 (SEC-004, 追加写不可篡改)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS audit_logs (
+    log_id        TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    user_id       TEXT NOT NULL,
+    action        TEXT NOT NULL,         -- create_task/review/export_report...
+    resource      TEXT NOT NULL,
+    resource_id   TEXT,
+    detail        JSONB DEFAULT '{}',
+    ip            TEXT,
+    user_agent    TEXT,
+    log_time      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_tenant_time ON audit_logs(tenant_id, log_time);
+
