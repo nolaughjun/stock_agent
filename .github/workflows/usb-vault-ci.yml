@@ -1,0 +1,32 @@
+# usb_vault CI: Windows + macOS 双平台 lint/单测/类型检查
+# 设计文档 P5: mac 腿为 best-effort (无真机烧录/构建验证, 仅逻辑测试)
+name: usb-vault-ci
+
+on:
+  push:
+    paths: ["src/app/usb_vault/**", ".github/workflows/usb-vault-ci.yml"]
+  pull_request:
+    paths: ["src/app/usb_vault/**"]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            notes: 主平台 (烧录/Windows 查看器构建均在 Windows)
+          - os: macos-latest
+            notes: best-effort (mac 模块经平台 monkeypatch 的逻辑覆盖)
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install cryptography pytest ruff mypy
+      # 单测全程不碰真实硬件/杀毒引擎 (serial_getter 注入 + 引擎 mock)
+      - run: python -m pytest src/app/usb_vault -q --tb=short
+      - run: ruff check src/app/usb_vault
+      # mypy strict 仅主平台跑 (win32 stubs)
+      - if: matrix.os == 'windows-latest'
+        run: python -m mypy -p src.app.usb_vault
