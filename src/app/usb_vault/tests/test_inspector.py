@@ -50,6 +50,17 @@ def vault(tmp_path: Path, dist_isolated: None) -> Path:
 
 
 def _make_writable(root: Path) -> None:
+    if sys.platform == "win32" and root.is_dir():
+        # 2026-09-28 起烧录收尾施加 NTFS 拒删 ACL: 篡改用例要先摘掉
+        # (整树 /t —— 单文件 /remove:d 对继承 ACE 会谎报成功), 否则
+        # unlink/open('wb') 被内核拒绝, 篡改根本落不了地
+        from src.app.usb_vault import ntfs_guard
+
+        if ntfs_guard.is_ntfs(root):
+            try:
+                ntfs_guard.strip_delete_denial(root)
+            except ntfs_guard.NtfsGuardError:
+                pass
     for dirpath, _d, names in os.walk(root):
         for n in names:
             p = os.path.join(dirpath, n)
@@ -83,7 +94,7 @@ def test_missing_keyinfo(tmp_path: Path) -> None:
 
 
 def test_corrupt_keyinfo_magic(vault: Path) -> None:
-    p = vault / "keyinfo.bin"
+    p = vault / config.KEYINFO_NAME
     data = bytearray(p.read_bytes())
     data[0] ^= 0xFF
     p.write_bytes(bytes(data))
@@ -92,7 +103,7 @@ def test_corrupt_keyinfo_magic(vault: Path) -> None:
 
 
 def test_keyinfo_bad_crc(vault: Path) -> None:
-    p = vault / "keyinfo.bin"
+    p = vault / config.KEYINFO_NAME
     data = bytearray(p.read_bytes())
     data[8] ^= 0xFF  # 动了 nonce 但没修 CRC
     p.write_bytes(bytes(data))
@@ -101,14 +112,14 @@ def test_keyinfo_bad_crc(vault: Path) -> None:
 
 
 def test_missing_manifest(vault: Path) -> None:
-    (vault / "manifest.enc").unlink()
+    (vault / config.MANIFEST_NAME).unlink()
     with pytest.raises(inspector.NotAVaultError):
         inspector.open_manifest(vault, _SEED["s"], serial_getter=_serial)
 
 
 def test_tampered_enc_detected(vault: Path) -> None:
     m, _ = inspector.open_manifest(vault, _SEED["s"], serial_getter=_serial)
-    victim = vault / "DATA" / f"{m.files[0].id}.enc"
+    victim = vault / config.DATA_DIR_NAME / f"{m.files[0].id}.enc"
     data = bytearray(victim.read_bytes())
     data[40] ^= 0xFF  # 动密文区
     victim.write_bytes(bytes(data))
@@ -121,7 +132,7 @@ def test_tampered_enc_detected(vault: Path) -> None:
 
 def test_missing_enc_detected(vault: Path) -> None:
     m, _ = inspector.open_manifest(vault, _SEED["s"], serial_getter=_serial)
-    (vault / "DATA" / f"{m.files[0].id}.enc").unlink()
+    (vault / config.DATA_DIR_NAME / f"{m.files[0].id}.enc").unlink()
     report = inspector.verify_drive(vault, _SEED["s"], serial_getter=_serial)
     assert not report.all_ok
     assert "读取失败" in (report.failed[0].error or "")

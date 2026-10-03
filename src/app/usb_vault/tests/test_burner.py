@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import plistlib
@@ -63,6 +64,16 @@ def _serial(value: int) -> Callable[[Path], int]:
 
 
 def _make_writable_tree(root: Path) -> None:
+    if sys.platform == "win32" and root.is_dir():
+        # 2026-09-28 起烧录收尾施加 NTFS 拒删 ACL (tmp 在 C: = 真 NTFS,
+        # icacls 真跑): 清理前先整树摘掉, 否则 tmp 目录残留拒删 ACE
+        from src.app.usb_vault import ntfs_guard
+
+        if ntfs_guard.is_ntfs(root):
+            try:
+                ntfs_guard.strip_delete_denial(root)
+            except ntfs_guard.NtfsGuardError:
+                pass
     for dirpath, _dirs, names in os.walk(root):
         for n in names:
             try:
@@ -98,10 +109,10 @@ def burned(source_dir: Path, drive_dir: Path, fake_viewer: Path,
 # ------------------------------------------------------------------ 端到端
 
 def test_burn_products_and_verify(burned: Path) -> None:
-    assert (burned / "keyinfo.bin").is_file()
-    assert (burned / "manifest.enc").is_file()
+    assert (burned / config.KEYINFO_NAME).is_file()
+    assert (burned / config.MANIFEST_NAME).is_file()
     assert (burned / "图书阅览器.exe").is_file()
-    enc_files = list((burned / "DATA").glob("*.enc"))
+    enc_files = list((burned / config.DATA_DIR_NAME).glob("*.enc"))
     assert len(enc_files) == 5  # 5 个源文件
 
 
@@ -124,7 +135,7 @@ def test_media_classification(burned: Path) -> None:
 
 
 def test_files_are_readonly(burned: Path) -> None:
-    enc = next((burned / "DATA").glob("*.enc"))
+    enc = next((burned / config.DATA_DIR_NAME).glob("*.enc"))
     assert not os.access(enc, os.W_OK)
 
 
@@ -133,7 +144,25 @@ def test_reburn_clears_old(burned: Path, source_dir: Path, fake_viewer: Path) ->
     report = burn(source_dir, burned, seed, _opts(viewer_exe=fake_viewer),
                   serial_getter=_serial(SERIAL))
     assert report.file_count == 5
-    assert len(list((burned / "DATA").glob("*.enc"))) == 5  # 旧的没残留
+    assert len(list((burned / config.DATA_DIR_NAME).glob("*.enc"))) == 5  # 旧的没残留
+
+
+def test_reburn_clears_legacy_plain_chain(
+    burned: Path, source_dir: Path, fake_viewer: Path
+) -> None:
+    """v2.4.7 点前缀换代: 旧明文名密文链 (v2.4.0~2.4.6 盘) 重烧时被清扫,
+    不留残链 —— 旧 keyinfo 是别的 SEED 的盐, 留着只会污染 Mac 观感与排障。"""
+    burned.joinpath(config.KEYINFO_NAME_LEGACY).write_bytes(b"old")
+    burned.joinpath(config.MANIFEST_NAME_LEGACY).write_bytes(b"old")
+    legacy_data = burned / config.DATA_DIR_NAME_LEGACY
+    legacy_data.mkdir()
+    (legacy_data / "deadbeef.enc").write_bytes(b"old")
+    burn(source_dir, burned, _seed_of_burn(), _opts(viewer_exe=fake_viewer),
+         serial_getter=_serial(SERIAL))
+    assert (burned / config.KEYINFO_NAME).is_file()  # 新名链就位
+    assert not (burned / config.KEYINFO_NAME_LEGACY).exists()
+    assert not (burned / config.MANIFEST_NAME_LEGACY).exists()
+    assert not legacy_data.exists()
 
 
 # ------------------------------------------------------------------ lock (防拷贝加固)
@@ -143,13 +172,13 @@ def test_lock_restores_readonly_after_unlock(burned: Path) -> None:
     """收件人清掉只读属性后, lock 免重烧恢复 +R; 幂等可重复执行。"""
     from src.app.usb_vault.burner import lock_drive
 
-    enc = next((burned / "DATA").glob("*.enc"))
+    enc = next((burned / config.DATA_DIR_NAME).glob("*.enc"))
     os.chmod(enc, stat.S_IRUSR | stat.S_IWUSR)  # 模拟属性被解开
     assert os.access(enc, os.W_OK)
     warnings, count = lock_drive(burned)
     assert count == 8  # 5 密文 + keyinfo + manifest + 查看器 exe
     assert not os.access(enc, os.W_OK)
-    assert not os.access(burned / "keyinfo.bin", os.W_OK)
+    assert not os.access(burned / config.KEYINFO_NAME, os.W_OK)
     assert not os.access(burned / "图书阅览器.exe", os.W_OK)
     warnings2, count2 = lock_drive(burned)  # 幂等
     assert count2 == count
@@ -208,6 +237,22 @@ def _write_plist(app: Path) -> None:
         plistlib.dumps({"CFBundleExecutable": "图书阅览器"}))
 
 
+def _write_seal(app: Path) -> None:
+    """伪签名封条: 与真实 codesign 同构 (files 表 + sha1), 供烧录封条闸门放行。"""
+    contents = app / "Contents"
+    entries: dict[str, bytes] = {}
+    for p in sorted(contents.rglob("*")):
+        if not p.is_file() or p.name in {"Info.plist", ".DS_Store"}:
+            continue
+        rel = p.relative_to(contents).as_posix()
+        if rel.startswith("MacOS/") or "_CodeSignature" in p.relative_to(contents).parts:
+            continue  # 主程序/封条自身不在 files 表里 (真实封条同口径)
+        entries[rel] = hashlib.sha1(p.read_bytes()).digest()
+    cs = contents / "_CodeSignature"
+    cs.mkdir(exist_ok=True)
+    (cs / "CodeResources").write_bytes(plistlib.dumps({"files": entries}))
+
+
 def _fake_mac_app(base: Path, seed: bytes) -> Path:
     app = base / "图书阅览器.app"
     macos = app / "Contents" / "MacOS"
@@ -217,6 +262,7 @@ def _fake_mac_app(base: Path, seed: bytes) -> Path:
     frameworks = app / "Contents" / "Frameworks"
     frameworks.mkdir()
     (frameworks / "seed.bin").write_bytes(seed)
+    _write_seal(app)
     return app
 
 
@@ -238,6 +284,172 @@ def test_burn_mac_viewer_seed_match_ok(source_dir: Path, drive_dir: Path,
                   serial_getter=_serial(SERIAL))
     assert report.viewer_mac_used is not None
     assert (drive_dir / "图书阅览器.app").is_dir()
+
+
+# ------------------------------------------- macOS 签名封条闸门 (2026-09-25)
+# 真机事故 (当日二次修正定谳): 新版 PyInstaller 的 .app 布局含 54 处符号链接,
+# zip -r 打包默认跟随链接成副本 + exFAT 无链接语义 —— 中转后封条逐条登记的
+# 链接位必失守, 收件人 Mac 弹「已损坏」; 骨架/SEED 检查全部放行。
+# 封条级 (CodeResources) 逐文件比对 + 链接条目/嵌套签名条目 (cdhash) 识别才能拦下。
+
+
+def test_burn_mac_seal_missing_seal_blocked(source_dir: Path, drive_dir: Path,
+                                            fake_viewer: Path, tmp_path: Path) -> None:
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    shutil.rmtree(app / "Contents" / "_CodeSignature")
+    with pytest.raises(BurnError, match="签名封条"):
+        burn(source_dir, drive_dir, b"S" * 64,
+             _opts(viewer_exe=fake_viewer, viewer_mac=app),
+             serial_getter=_serial(SERIAL))
+
+
+def test_burn_mac_seal_hash_mismatch_blocked(source_dir: Path, drive_dir: Path,
+                                             fake_viewer: Path, tmp_path: Path) -> None:
+    """封条之后文件又被改 (哈希不符): SEED 与骨架都看不出, 只有封条能拦。"""
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    lib = app / "Contents" / "Frameworks" / "libfoo.dylib"
+    lib.write_bytes(b"v1")
+    _write_seal(app)  # 以 v1 内容重新封条
+    lib.write_bytes(b"v2")  # 封条之后被改
+    with pytest.raises(BurnError, match="哈希不符: Frameworks/libfoo\\.dylib"):
+        burn(source_dir, drive_dir, b"S" * 64,
+             _opts(viewer_exe=fake_viewer, viewer_mac=app),
+             serial_getter=_serial(SERIAL))
+
+
+def test_burn_mac_seal_extra_tree_blocked(source_dir: Path, drive_dir: Path,
+                                          fake_viewer: Path, tmp_path: Path) -> None:
+    """复刻 2026-09-25 真机: 封条外的整套目录树 (Resources/) 混进 bundle。"""
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    shutil.copytree(app / "Contents" / "Frameworks", app / "Contents" / "Resources")
+    with pytest.raises(BurnError, match="封条外多余文件: Resources/seed\\.bin"):
+        burn(source_dir, drive_dir, b"S" * 64,
+             _opts(viewer_exe=fake_viewer, viewer_mac=app),
+             serial_getter=_serial(SERIAL))
+
+
+def _amend_seal(app: Path, files2_extra: dict[str, dict[str, bytes]]) -> None:
+    """在既有伪封条上追加 files2 条目 (链接/嵌套签名等特殊形态)。"""
+    seal_path = app / "Contents" / "_CodeSignature" / "CodeResources"
+    seal = plistlib.loads(seal_path.read_bytes())
+    merged = dict(seal.get("files2") or {})
+    merged.update(files2_extra)
+    seal["files2"] = merged
+    seal_path.write_bytes(plistlib.dumps(seal))
+
+
+def test_burn_mac_seal_symlink_entry_blocked(source_dir: Path, drive_dir: Path,
+                                             fake_viewer: Path, tmp_path: Path) -> None:
+    """新版 codesign 用 "symlink" 键登记链接; 中转拍平后 (盘上是普通目录) 必拦。
+
+    2026-09-25(b): 旧闸门只认 "link" 键, 把这类条目误报成"缺失/哈希不符"。
+    """
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    (app / "Contents" / "Frameworks" / "PIL" / ".dylibs").mkdir(parents=True)
+    _amend_seal(app, {"Frameworks/PIL/.dylibs": {"symlink": b"__dot__dylibs"}})
+    with pytest.raises(BurnError, match="符号链接失守: Frameworks/PIL/\\.dylibs"):
+        burn(source_dir, drive_dir, b"S" * 64,
+             _opts(viewer_exe=fake_viewer, viewer_mac=app),
+             serial_getter=_serial(SERIAL))
+
+
+def test_burn_mac_seal_cdhash_entry_ok(source_dir: Path, drive_dir: Path,
+                                       fake_viewer: Path, tmp_path: Path) -> None:
+    """嵌套已签名代码条目 (cdhash/requirement, 无内容哈希) 不误报。
+
+    底线检查 = 真 Mach-O (含 fat) 须内嵌签名 SuperBlob 魔数; 完整校验在收件人 Mac。
+    """
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    lib = app / "Contents" / "Frameworks" / "libsigned.dylib"
+    # Mach-O 64 位小端魔数 + SuperBlob 魔数 (嵌入签名在文件内, 位置任意)
+    lib.write_bytes(bytes.fromhex("cffaedfe") + b"\x00" * 8
+                    + bytes.fromhex("fade0cc0") + b"\x00" * 56)
+    _amend_seal(app, {"Frameworks/libsigned.dylib": {
+        "cdhash": b"\x01" * 20, "requirement": b"anchor apple generic"}})
+    report = burn(source_dir, drive_dir, b"S" * 64,
+                  _opts(viewer_exe=fake_viewer, viewer_mac=app),
+                  serial_getter=_serial(SERIAL))
+    assert report.viewer_mac_used is not None
+
+
+def test_burn_mac_seal_cdhash_non_macho_data_ok(source_dir: Path, drive_dir: Path,
+                                                fake_viewer: Path, tmp_path: Path) -> None:
+    """2026-09-29(c) 真机回归: codesign 对 Frameworks 顶层的**非 Mach-O 数据文件**
+    同样落 cdhash 条目且不写入嵌入签名 (base_library.zip/seed.bin 实证与
+    Resources 侧 hash2 锚定原件逐字节相同) —— 强行要求魔数必误报熔断。"""
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    zipped = app / "Contents" / "Frameworks" / "base_library.zip"
+    zipped.write_bytes(b"PK\x03\x04" + b"\x00" * 32)  # zip 头, 非 Mach-O
+    _amend_seal(app, {"Frameworks/base_library.zip": {
+        "cdhash": b"\x01" * 20, "requirement": b'identifier "base_library"'}})
+    report = burn(source_dir, drive_dir, b"S" * 64,
+                  _opts(viewer_exe=fake_viewer, viewer_mac=app),
+                  serial_getter=_serial(SERIAL))
+    assert report.viewer_mac_used is not None
+
+
+def test_burn_mac_seal_cdhash_tampered_blocked(source_dir: Path, drive_dir: Path,
+                                               fake_viewer: Path, tmp_path: Path) -> None:
+    """真 Mach-O 的 cdhash 条目文件嵌入签名被剥 (被换/被截) —— 拦下。"""
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    lib = app / "Contents" / "Frameworks" / "libbroken.dylib"
+    lib.write_bytes(bytes.fromhex("cffaedfe") + b"mach-o, signature stripped")
+    _amend_seal(app, {"Frameworks/libbroken.dylib": {
+        "cdhash": b"\x01" * 20, "requirement": b"anchor apple generic"}})
+    with pytest.raises(BurnError, match="嵌套签名代码异常.*libbroken\\.dylib"):
+        burn(source_dir, drive_dir, b"S" * 64,
+             _opts(viewer_exe=fake_viewer, viewer_mac=app),
+             serial_getter=_serial(SERIAL))
+
+
+def test_burn_mac_seal_bundle_dir_entry_ok(source_dir: Path, drive_dir: Path,
+                                           fake_viewer: Path, tmp_path: Path) -> None:
+    """2026-09-29(c) 真机回归: 嵌套代码包 (扁平化 Python.framework) 在封条里是
+    一条 cdhash **目录**条目 —— 目录在位 + 包内 _CodeSignature/CodeResources 在位
+    即过; 包内文件登记在包自己的内封条, 不得误报"缺失/多余"。"""
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    fw = app / "Contents" / "Frameworks" / "Python.framework"
+    (fw / "_CodeSignature").mkdir(parents=True)
+    (fw / "Python").write_bytes(bytes.fromhex("cffaedfe") + b"PY-BINARY")
+    (fw / "Resources").mkdir()
+    (fw / "Resources" / "Info.plist").write_bytes(b"PLIST")
+    (fw / "_CodeSignature" / "CodeResources").write_bytes(
+        plistlib.dumps({"files": {}}))
+    _amend_seal(app, {"Frameworks/Python.framework": {
+        "cdhash": b"\x01" * 20, "requirement": b'identifier "org.python.python"'}})
+    report = burn(source_dir, drive_dir, b"S" * 64,
+                  _opts(viewer_exe=fake_viewer, viewer_mac=app),
+                  serial_getter=_serial(SERIAL))
+    assert report.viewer_mac_used is not None
+
+
+def test_burn_mac_seal_bundle_missing_inner_seal_blocked(source_dir: Path,
+                                                         drive_dir: Path,
+                                                         fake_viewer: Path,
+                                                         tmp_path: Path) -> None:
+    """嵌套代码包目录条目在位但包内没有 _CodeSignature/CodeResources
+    (中转丢内封条) —— 拦下, 收件人 Mac 验不了包内完整性。"""
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    fw = app / "Contents" / "Frameworks" / "Python.framework"
+    fw.mkdir(parents=True)
+    (fw / "Python").write_bytes(b"PY-BINARY")
+    _amend_seal(app, {"Frameworks/Python.framework": {
+        "cdhash": b"\x01" * 20, "requirement": b'identifier "org.python.python"'}})
+    with pytest.raises(BurnError, match="嵌套代码包缺内封条"):
+        burn(source_dir, drive_dir, b"S" * 64,
+             _opts(viewer_exe=fake_viewer, viewer_mac=app),
+             serial_getter=_serial(SERIAL))
+
+
+def test_burn_mac_seal_appledouble_residue_ignored(source_dir: Path, drive_dir: Path,
+                                                   fake_viewer: Path, tmp_path: Path) -> None:
+    """中转残留 ._xxx (AppleDouble) 不算封条外多余文件 (codesign 同口径忽略)。"""
+    app = _fake_mac_app(tmp_path, b"S" * 64)
+    (app / "Contents" / "Frameworks" / "._seed.bin").write_bytes(b"apple-double-junk")
+    report = burn(source_dir, drive_dir, b"S" * 64,
+                  _opts(viewer_exe=fake_viewer, viewer_mac=app),
+                  serial_getter=_serial(SERIAL))
+    assert report.viewer_mac_used is not None
 
 
 def test_burn_mac_viewer_missing_seed_bin_rejected(source_dir: Path, drive_dir: Path,
@@ -494,7 +706,7 @@ def test_av_threats_abort(source_dir: Path, drive_dir: Path, fake_viewer: Path,
         burn(source_dir, drive_dir, os.urandom(64),
              _opts(viewer_exe=fake_viewer, skip_scan=False),
              serial_getter=_serial(SERIAL))
-    assert not (drive_dir / "DATA").exists()  # 中止时不留任何产物
+    assert not (drive_dir / config.DATA_DIR_NAME).exists()  # 中止时不留任何产物
 
 
 def test_av_unavailable_aborts_fail_closed(source_dir: Path, drive_dir: Path,
@@ -558,6 +770,7 @@ def fake_mac_app(tmp_path: Path) -> Callable[[bytes], Path]:
         macos.mkdir(parents=True, exist_ok=True)
         (macos / "图书阅览器").write_bytes(b"FAKE-MACHO")
         _write_plist(app)
+        _write_seal(app)  # 烧录封条闸门 (2026-09-25) 要求产物带同构封条
         return app
     return make
 
@@ -634,15 +847,15 @@ def test_burn_hides_carrier_artifacts(source_dir: Path, drive_dir: Path,
         return int(ctypes.windll.kernel32.GetFileAttributesW(str(p)))
 
     # 文件: R(来自 set_read_only)+H+S 齐全 —— 隐藏掩码不得冲掉只读位
-    hidden_files: list[Path] = [drive_dir / "keyinfo.bin", drive_dir / "manifest.enc"]
-    hidden_files += list((drive_dir / "DATA").glob("*.enc"))
+    hidden_files: list[Path] = [drive_dir / config.KEYINFO_NAME, drive_dir / config.MANIFEST_NAME]
+    hidden_files += list((drive_dir / config.DATA_DIR_NAME).glob("*.enc"))
     for p in hidden_files:
         assert p.exists(), f"产物缺失: {p.name}"
         a = attrs(p)
         assert a not in (-1, 0xFFFFFFFF), f"读属性失败: {p.name}"
         assert a & 0x7 == 0x7, f"须为只读+隐藏+系统: {p.name} -> {a:#x}"
     # 目录本身从不设只读 (set_read_only 只动文件), 只断言 H+S
-    for p in (drive_dir / "DATA", drive_dir / "图书阅览器" / "_internal"):
+    for p in (drive_dir / config.DATA_DIR_NAME, drive_dir / "图书阅览器" / "_internal"):
         a = attrs(p)
         assert a & 0x6 == 0x6, f"目录未隐藏: {p.name} -> {a:#x}"
     exe = drive_dir / "图书阅览器" / "图书阅览器.exe"
@@ -703,7 +916,7 @@ def test_reburn_removes_stale_viewer_trees(source_dir: Path, drive_dir: Path,
          _opts(viewer_exe=fake_viewer),
          serial_getter=_serial(SERIAL))
     assert not (drive_dir / "图书阅览器.app").exists()
-    assert len(list((drive_dir / "DATA").glob("*.enc"))) == 5
+    assert len(list((drive_dir / config.DATA_DIR_NAME).glob("*.enc"))) == 5
 
 
 def test_viewer_copy_corruption_detected(source_dir: Path, drive_dir: Path,

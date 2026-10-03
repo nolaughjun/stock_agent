@@ -31,28 +31,23 @@ from src.app.usb_vault.volume_id import VolumeIdError
 
 
 def _device_identifier(volume_root: Path) -> str:
-    """diskutil info --plist <卷> → DeviceIdentifier (如 'disk4s1')。
+    """diskutil info <卷> → DeviceIdentifier (如 'disk4s1')。
 
     diskutil 拒识 (2026-09 真机案例: ls 看得到卷, diskutil 却返回非零) 时,
-    退回解析 `mount` 输出反查设备节点 —— 两条路都不通才报错, 且把 diskutil
-    的原始报错带上, 便于现场定位 (盘没挂稳 / 路径不是卷根 / 非 exFAT)。
+    退回解析 `mount` 输出反查设备节点 —— 两条路都不通才报错, 且把两条路
+    的原始报错都带上, 便于现场定位 (盘没挂稳 / 路径不是卷根 / 非 exFAT)。
     """
-    try:
-        result = subprocess.run(
-            ["diskutil", "info", "--plist", str(volume_root)],
-            capture_output=True, check=False,
-        )
-    except OSError as exc:
-        raise VolumeIdError(f"无法运行 diskutil (U盘未挂载?): {exc}") from exc
-    if result.returncode == 0:
-        try:
-            info = plistlib.loads(result.stdout)
-        except plistlib.InvalidFileException as exc:
-            raise VolumeIdError(f"diskutil 输出解析失败: {exc}") from exc
+    info, why = _diskutil_plist(volume_root.as_posix())
+    if info is not None:
         ident = info.get("DeviceIdentifier")
         if ident:
             return str(ident)
-    return _device_from_mount(volume_root, result)
+    try:
+        return _device_from_mount(volume_root)
+    except VolumeIdError as exc:
+        raise VolumeIdError(
+            f"diskutil 不通 ({why or 'plist 无 DeviceIdentifier 键'}); {exc}"
+        ) from exc
 
 
 def _device_from_mount(volume_root: Path,
@@ -129,6 +124,138 @@ def get_volume_serial_mac(root: str | Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 外置介质判据 (v2.4.8 拷离介质闸门, 2026-09-29)
+# ---------------------------------------------------------------------------
+
+def mount_point_of(path: str | Path) -> Path | None:
+    """上溯路径找 /Volumes/<卷名> 挂载点; 不在其下 (桌面/内置盘等) 返回 None。
+
+    与 viewer.app._locate_drive 的 darwin 分支同一走法 (设计 D2), 收敛成
+    公共助手供两处使用。不做 resolve(): .app 内 sys.executable 本就是
+    绝对真路径, resolve 反而可能把 firmlink 改写到别的名字下。
+    """
+    for parent in Path(path).parents:
+        if parent.parent == Path("/Volumes"):
+            return parent
+    return None
+
+
+_DISKUTIL_PLIST_FLAGS = ("-plist", "--plist")
+
+
+def _diskutil_plist(target: str) -> tuple[dict[str, object] | None, str]:
+    """diskutil info <flag> <目标> → (plist, 失败原因); 成功时原因为空串。
+
+    **2026-10-01 真机实锤 (v2.4.10)**: 收件 Mac (macOS 26) 上
+    `diskutil info --plist <目标>` 对任何目标 (含纯 ASCII 的 /dev/disk4)
+    一律退出码 1 只打印用法说明, 而用法自述就是单横线 `[-plist]` —— 双横
+    线写法被该版 diskutil 拒收, 与卷名/编码无关。v2.4.9 的级联三通道共用
+    这一个写法 = 公共单点故障, 全灭。故本函数收敛为全模块唯一的 diskutil
+    探测点, 按 (-plist, --plist) 双写法探测: 单横线是该机用法文本自载的
+    形态且历来各版通用, 失败再补双横线 (旧机型的宽容写法), 两种都不通才
+    返回 None (原因带两次尝试的退出码)。
+    起不来 / 坏 plist 同样归 None —— 调用方 (介质判据级联 / UUID 通道 /
+    设备定位) 各自记原因走下一通道, 不在此抛。
+    """
+    whys: list[str] = []
+    for flag in _DISKUTIL_PLIST_FLAGS:
+        try:
+            result = subprocess.run(
+                ["diskutil", "info", flag, target],
+                capture_output=True, check=False,
+            )
+        except OSError as exc:
+            return None, f"无法运行 diskutil ({exc})"
+        if result.returncode == 0:
+            try:
+                return plistlib.loads(result.stdout), ""
+            except plistlib.InvalidFileException as exc:
+                return None, f"diskutil 输出不是合法 plist ({exc})"
+        detail = result.stderr.decode("utf-8", "replace").strip()[:120]
+        whys.append(f"{flag}: 退出码 {result.returncode} {detail or '无 stderr'}")
+    return None, "diskutil " + "; ".join(whys)
+
+
+def _external_verdict(info: dict[str, object]) -> bool | None:
+    """diskutil plist → 外置与否; 可判的键都没有时返回 None (换下一通道)。
+
+    Internal 键权威 (真USB棒恒 false); 2026-09-30 真机 (macOS 26, NTFS 走
+    fskit 挂载) 实测卷级 plist 可能缺 Internal —— 同一支棒在文本 diskutil
+    info 里明明白白 Device Location: External / Removable Media: Removable。
+    DeviceLocation 与 Internal 同出 IOKit 盘属性 (文本输出的 Device Location
+    行即由它渲染), 缺 Internal 时作同源旁证, 不引新事实源。
+    """
+    internal = info.get("Internal")
+    if isinstance(internal, bool):
+        return not internal
+    location = info.get("DeviceLocation")
+    if isinstance(location, str) and location.strip().lower() == "external":
+        return True
+    return None
+
+
+def is_on_external_media(path: str | Path) -> bool:
+    """路径是否位于外置介质挂载的卷上 (v2.4.8 拷离介质闸门判据)。
+
+    两段判: ①上溯不到 /Volumes/<卷名> = 拷到内置盘/桌面的副本, 直接
+    False; ②挂载点在 /Volumes 下也未必是U盘 —— 内置的额外数据卷同样
+    挂 /Volumes (Catalina+ 数据卷就在其下), 须以 diskutil 的盘属性分辨。
+    **2026-09-30 真机事故 (v2.4.9 修)**: macOS 26 的 NTFS 走 fskit 挂载,
+    卷级 `diskutil info --plist` 可能缺 Internal 键 —— 旧实现单通道读不出
+    即 VolumeIdError, 被 fail-closed 谢幕, 真棒上的阅览器被自家闸门错杀
+    (弹出"脱离U盘介质")。改三级级联, 全灭才抛:
+      1. 挂载点 plist: Internal 键 → 判; 缺 Internal 看 DeviceLocation
+        (同源旁证);
+      2. `mount` 输出反查设备节点 (复用 _device_from_mount, 得 disk4s1),
+        对切片节点 /dev/disk4s1 再问 plist;
+      3. 切片归整盘 (/dev/disk4) 问 Internal —— 整盘信息不经文件系统栈,
+        fskit 卷缺失的键在这里仍在。
+    diskutil 经 XPC 由 root 守护进程代劳, 自身免特权 (模块头注释通道 2
+    同款)。全通道灭抛 VolumeIdError 且带上各通道原因 (现场截图即自诊断)
+    —— 调用方 (app._exe_on_removable_media) 按 fail-closed 谢幕处理, 不猜。
+    **2026-10-01 定谳修正 (v2.4.10)**: v2.4.9 当日真机复测推翻"plist 缺
+    Internal 键"的机制推断 —— 该机 (macOS 26) diskutil 对双横线 --plist
+    一律退出码 1 打用法说明 (selfcheck 三通道死因逐条带出, 全是 Usage),
+    级联三通道共用该写法 = 公共单点故障。级联保留, 探测统一改
+    _diskutil_plist 双写法 (-plist 优先) —— 级联的通道必须真正独立,
+    否则再多通道也是同一个单点。
+    """
+    if sys.platform != "darwin":
+        raise VolumeIdError("is_on_external_media 仅支持 macOS")
+    mount = mount_point_of(path)
+    if mount is None:
+        return False
+    notes: list[str] = []
+    # as_posix 同 _device_from_mount: mac 上与 str() 等价, Windows 测试机不跑偏
+    info, why = _diskutil_plist(mount.as_posix())
+    if info is not None:
+        verdict = _external_verdict(info)
+        if verdict is not None:
+            return verdict
+        keys = ",".join(sorted(str(k) for k in info)[:8]) or "空 plist"
+        notes.append(f"挂载点 plist 无 Internal/DeviceLocation 可判 (键: {keys})")
+    else:
+        notes.append(f"挂载点查询不通: {why}")
+    # 通道 2/3: mount 反查设备节点 → 切片节点 → 整盘节点
+    try:
+        ident = _device_from_mount(mount)
+    except VolumeIdError as exc:
+        notes.append(f"mount 反查设备失败: {exc}")
+        raise VolumeIdError("; ".join(notes)) from exc
+    whole = re.sub(r"s\d+$", "", ident)
+    for target in (f"/dev/{ident}", f"/dev/{whole}"):
+        info, why = _diskutil_plist(target)
+        if info is None:
+            notes.append(f"{target} 查询不通: {why}")
+            continue
+        verdict = _external_verdict(info)
+        if verdict is not None:
+            return verdict
+        notes.append(f"{target} plist 无 Internal/DeviceLocation 可判")
+    raise VolumeIdError("; ".join(notes))
+
+
+# ---------------------------------------------------------------------------
 # 免特权降级通道: diskutil VolumeUUID (2026-09-15 真机: 对 exFAT 不提供)
 # ---------------------------------------------------------------------------
 
@@ -136,27 +263,17 @@ _UUID_16x2 = re.compile(r"^([0-9A-Fa-f]{4})-([0-9A-Fa-f]{4})$")
 
 
 def _diskutil_volume_uuid(volume_root: Path) -> tuple[str | None, str]:
-    """diskutil info --plist 里的 VolumeUUID (如 '40E8-75AA') + 失败原因说明。
+    """diskutil info plist 里的 VolumeUUID (如 '40E8-75AA') + 失败原因说明。
 
-    diskutil 经 XPC 让 root 守护进程代劳, 自身不需要任何特权。返回
+    diskutil 经 XPC 让 root 守护进程代劳, 自身不需要任何特权; 探测走
+    _diskutil_plist (2026-10-01 起双写法兜底, 见其 docstring)。返回
     (uuid, note): uuid 为 None 时 note 说明是哪一种失败 (启动不了 / 退出码
     非零 / plist 里没有该键) —— 2026-09-15 真机证明 exFAT 会落在第三种,
     把键名样本带回报错文案, 截图即自诊断, 不用再猜。
     """
-    try:
-        result = subprocess.run(
-            ["diskutil", "info", "--plist", str(volume_root)],
-            capture_output=True, check=False,
-        )
-    except OSError as exc:
-        return None, f"diskutil 无法启动 ({exc})"
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", "replace").strip()[:120]
-        return None, f"diskutil 退出码 {result.returncode}: {detail or '无 stderr'}"
-    try:
-        info = plistlib.loads(result.stdout)
-    except plistlib.InvalidFileException as exc:
-        return None, f"diskutil 输出不是合法 plist: {exc}"
+    info, why = _diskutil_plist(volume_root.as_posix())
+    if info is None:
+        return None, why
     uuid_val = info.get("VolumeUUID")
     if uuid_val:
         return str(uuid_val), ""

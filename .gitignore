@@ -71,3 +71,6 @@ Thumbs.db
 config/api_keys.json
 mp_publish_config.json
 wechat_config.json
+
+# usb_vault 根密钥 (泄露=所有用它烧的盘可被解开, 永不入库)
+src/app/usb_vault/secrets/

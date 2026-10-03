@@ -7,6 +7,7 @@ burn() 只做编排, 加密细节在 crypto.py, 转换在 office_convert.py,
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import plistlib
@@ -21,8 +22,15 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
-from src.app.usb_vault import av_scan, config, inspector, office_convert, unlock_code
-from src.app.usb_vault.config import DATA_DIR_NAME, KEYINFO_NAME, MANIFEST_NAME
+from src.app.usb_vault import av_scan, config, inspector, ntfs_guard, office_convert, unlock_code
+from src.app.usb_vault.config import (
+    DATA_DIR_NAME,
+    DATA_DIR_NAME_LEGACY,
+    KEYINFO_NAME,
+    KEYINFO_NAME_LEGACY,
+    MANIFEST_NAME,
+    MANIFEST_NAME_LEGACY,
+)
 from src.app.usb_vault.crypto import CryptoError, derive_data_key, encrypt_stream
 from src.app.usb_vault.manifest import FileEntry, Manifest, encrypt_manifest, now_iso
 from src.app.usb_vault.seed import get_or_create_seed
@@ -66,18 +74,53 @@ def _normalize_root(drive: Path) -> Path:
 def _win_viewer_names(opts: BurnOptions) -> tuple[str, str]:
     """Windows 查看器落盘名 (目录名, exe名)。
 
-    双入口模式用点前缀名 (.图书阅览器): Mac Finder 默认不显示点前缀项 =>
-    分区1上的 Windows 入口对 Mac 收件人不可见; 单分区默认流保持原名零改动。
-    与 VIEWER_MAC_BUILD_NAME 同一模式: 产物名不变, 落盘改名。
+    双入口模式用书名前缀 + （适配Windows系统）后缀名 (2026-09-23 用户
+    三次定稿: 收件人一眼可辨平台入口与内容, 点前缀隐身设计早已弃用);
+    单分区默认流保持原名零改动。与 VIEWER_MAC_BUILD_NAME 同一模式:
+    产物名不变, 落盘改名。
     """
     if opts.dual_entry:
-        return config.VIEWER_WIN_DIR_NAME_DOTTED, config.VIEWER_EXE_NAME_DOTTED
+        return config.VIEWER_WIN_DIR_NAME_DUAL, config.VIEWER_EXE_NAME_DUAL
     return config.VIEWER_DIR_NAME, config.VIEWER_EXE_NAME
+
+
+def _mac_viewer_name(opts: BurnOptions, *, intel: bool = False) -> str:
+    """macOS 查看器落盘名: 双入口按芯片一分为二 (2026-10-02 双架构交付),
+    单分区保持原名 (单 app 形态, 无芯片之分)。"""
+    if opts.dual_entry:
+        return (config.VIEWER_MAC_DIR_NAME_DUAL_INTEL if intel
+                else config.VIEWER_MAC_DIR_NAME_DUAL_APPLE)
+    return config.VIEWER_MAC_DIR_NAME
+
+
+# 查看器落盘名全名单 (当前名 + 历史名): 清扫/只读/回收/隐藏各处共用 ——
+# 命名已三代更替 (点前缀 → 半角后缀 → 全角后缀 → 适配后缀), 集中定义防漏名单。
+_ALL_EXE_NAMES: tuple[str, ...] = (
+    config.VIEWER_EXE_NAME,  # 单分区 onefile
+    config.VIEWER_EXE_NAME_DUAL,  # 双入口 onefile (适配后缀版, 当前)
+    config.VIEWER_EXE_NAME_FULLWIDTH_LEGACY,  # 全角（WIN）后缀版 (二代)
+    config.VIEWER_EXE_NAME_SUFFIXED_LEGACY,  # 半角后缀版 (2026-09-23 第一版)
+    config.VIEWER_EXE_NAME_DOTTED_LEGACY,  # 点前缀版 (2026-09-22 及之前)
+)
+_ALL_VIEWER_DIR_NAMES: tuple[str, ...] = (
+    config.VIEWER_DIR_NAME,  # 单分区 onedir
+    config.VIEWER_WIN_DIR_NAME_DUAL,  # 双入口 (适配后缀版, 当前)
+    config.VIEWER_WIN_DIR_NAME_FULLWIDTH_LEGACY,
+    config.VIEWER_WIN_DIR_NAME_SUFFIXED_LEGACY,
+    config.VIEWER_WIN_DIR_NAME_DOTTED_LEGACY,
+    config.VIEWER_MAC_DIR_NAME,  # 单分区 .app
+    config.VIEWER_MAC_DIR_NAME_DUAL_APPLE,  # 双入口 .app Apple 芯片版 (当前)
+    config.VIEWER_MAC_DIR_NAME_DUAL_INTEL,  # 双入口 .app Intel 版 (当前)
+    config.VIEWER_MAC_DIR_NAME_DUAL_LEGACY,  # 双入口单 Mac 入口名 (适配后缀版, 2026-10-02 双架构拆分前)
+    config.VIEWER_MAC_DIR_NAME_FULLWIDTH_LEGACY,
+    config.VIEWER_MAC_DIR_NAME_SUFFIXED_LEGACY,
+)
 
 
 # ---------------------------------------------------------------------------
 # 哈希包装: 加密的同时顺带算 明文/密文 SHA-256, 单遍 IO
 # ---------------------------------------------------------------------------
+
 
 class _HashingReader:
     def __init__(self, fh: BinaryIO) -> None:
@@ -113,14 +156,24 @@ class _HashingWriter:
 # 选项与报告
 # ---------------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class BurnOptions:
     title: str = "资料"
     expire: date | None = None
     max_opens: int | None = None
     convert_office: bool = True
-    viewer_exe: Path | None = None  # Windows 查看器 (exe=onefile / 目录=onedir); None=dist 查找+自动构建
+    viewer_exe: Path | None = (
+        None  # Windows 查看器 (exe=onefile / 目录=onedir); None=dist 查找+自动构建
+    )
     viewer_mac: Path | None = None  # macOS 查看器 .app 目录树; None=dist 查找, 缺失仅告警
+    # 2026-10-02 双架构: Intel 版 .app (x86_64 瘦构建)。仅双入口模式消费
+    # (单分区保持单 app 形态); dual_entry 时缺失由 burn/burn_dual 熔断, 不许
+    # 烧出只有一半 Mac 入口的交付盘。
+    viewer_mac_intel: Path | None = None
+    # 书名引导壳 exe (v2.4.5): 双入口目录版收件人双击的书名程序。None=dist
+    # 查找+自动构建 (Windows); 跨机烧录 (Mac) 须 --launcher-exe 指定。
+    launcher_exe: Path | None = None
     converter: str | None = None  # Office 转换后端 (None=平台默认; 见 office_convert.BACKENDS)
     av_cmd: str | None = None  # 自定义病毒扫描引擎模板 ({path} 占位)
     skip_scan: bool = False  # 显式豁免烧录前病毒扫描 (设计 13.1 fail-closed 的唯一后门)
@@ -130,10 +183,12 @@ class BurnOptions:
     set_label: bool = False
     apply_readonly: bool = True
     # 双入口分区模式 (由 burn_dual 编排注入, 需 Windows 烧录机 + 管理员):
-    # 分区1 = 数据 + Windows 查看器 (点前缀目录名), 分区2 = 仅 Mac 查看器
+    # v2.4.0 反转布局 —— 分区1 (可见, 盘符) = 双阅览器 ((WIN)/(MAC) 后缀名,
+    # 2026-09-23 用户定稿; 旧点前缀名仅留作清扫兼容);
+    # 分区2 (无盘符, finalize 后不可见) = 加密链全套 (keyinfo/manifest/DATA)
     dual_entry: bool = False
     dual_scheme: str = config.DUAL_SCHEME_GPT  # 'gpt'=交付级 / 'mbr'=快速验证
-    mac_partition_root: Path | None = None  # 分区2临时盘符根; dual_entry 时 .app 写这里
+    chain_partition_root: Path | None = None  # 分区2临时盘符根; dual_entry 时加密链写这里
 
 
 @dataclass(slots=True)
@@ -146,12 +201,14 @@ class BurnReport:
     total_enc: int = 0
     verify_ok: bool = False
     viewer_exe_used: Path | None = None
-    viewer_mac_used: Path | None = None
+    viewer_mac_used: Path | None = None  # Apple 芯片版 (双入口) / 单分区唯一 Mac app
+    viewer_mac_intel_used: Path | None = None  # 2026-10-02 双架构: Intel 版 (仅双入口)
     av_engine: str | None = None  # 本次烧录前扫描所用引擎; None=未扫 (--skip-scan)
     av_duration_s: float | None = None
     unlock_code: str | None = None  # 本盘解锁码 (密码模式); 非密码模式为 None
     code_archive: Path | None = None  # 归档文件路径 (密码模式)
     dual_entry: bool = False  # 双入口分区模式 (README "双分区烧录")
+    deny_acl_applied: bool = False  # NTFS 防误删 ACL 已施加 (全部目标卷; 2026-09-28)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -162,6 +219,7 @@ class BurnReport:
 # ---------------------------------------------------------------------------
 # 只读化
 # ---------------------------------------------------------------------------
+
 
 def _make_writable(path: Path) -> None:
     try:
@@ -207,12 +265,11 @@ def lock_drive(drive: Path) -> tuple[list[str], int]:
     if not keyinfo.is_file():
         raise BurnError(f"该盘不是资料盘 (缺 {KEYINFO_NAME}): {drive}")
     extras = [keyinfo, drive / MANIFEST_NAME]
-    for exe_name in (config.VIEWER_EXE_NAME, config.VIEWER_EXE_NAME_DOTTED):
+    for exe_name in _ALL_EXE_NAMES:
         exe_dst = drive / exe_name
         if exe_dst.is_file():
             extras.append(exe_dst)
-    for dirname in (config.VIEWER_DIR_NAME, config.VIEWER_WIN_DIR_NAME_DOTTED,
-                    config.VIEWER_MAC_DIR_NAME):
+    for dirname in _ALL_VIEWER_DIR_NAMES:
         d = drive / dirname
         if d.is_dir():
             extras += _iter_files(d)
@@ -221,44 +278,161 @@ def lock_drive(drive: Path) -> tuple[list[str], int]:
     if sys.platform == "win32":
         hide_targets: list[Path] = [keyinfo, drive / MANIFEST_NAME, data_dir]
         hide_targets += _iter_files(data_dir)
-        for dirname in (config.VIEWER_DIR_NAME, config.VIEWER_WIN_DIR_NAME_DOTTED):
-            internal = drive / dirname / "_internal"
-            if internal.is_dir():  # onedir 查看器的依赖树; exe 本体保持可见
+        for dirname in _ALL_VIEWER_DIR_NAMES:
+            vdir = drive / dirname
+            internal = vdir / "_internal"
+            if internal.is_dir():  # onedir 查看器的依赖树
                 hide_targets.append(internal)
+            real_exe = vdir / config.VIEWER_EXE_NAME  # v2.4.6: 见 burn_dual 同段注释
+            if real_exe.is_file() and (vdir / config.VIEWER_INNER_EXE_NAME_DUAL).is_file():
+                hide_targets.append(real_exe)
         for p in hide_targets:
             if not set_hidden(p):
                 warnings.append(f"隐藏失败: {p.name}")
+    if sys.platform == "win32" and ntfs_guard.is_ntfs(drive):
+        # NTFS 防误删同集恢复 (2026-09-28): lock 是"补回加固属性"的入口,
+        # deny ACE 缺了也在此补 (幂等); 失败仅告警 —— 盘本身可烧可验,
+        # 不必像烧录收尾那样熔断
+        try:
+            _apply_delete_denial(drive, drive, data_dir)
+        except BurnError as exc:
+            warnings.append(f"{exc.args[0]} (只读/隐藏已恢复, 防误删 ACL 未恢复)")
     return warnings, len(files)
 
 
-def _clear_own_artifacts(drive: Path, *, mac_root: Path | None = None) -> None:
+def _clear_own_artifacts(drive: Path, *, chain_root: Path | None = None) -> None:
     """重烧前清掉旧产物 (旧密文不残留)。只动 usb_vault 自己的文件。
 
-    查看器名双份常驻兼容 (图书阅览器 与 .图书阅览器): 单/双入口模式互切
-    重烧、旧版盘升级都能清干净; mac_root (双入口的分区2临时根) 下同样只清
-    自己的目录, 其余一概不动。
+    查看器名全名单清扫 (当前名 + 历史名: 单分区原名 / (WIN)(MAC) 后缀名 /
+    旧点前缀名): 单/双入口模式互切重烧、旧版盘升级都能清干净。chain_root
+    (v2.4.0 反转布局的分区2临时根, 加密链所在) 下同样只清自己的产物;
+    旧版布局的遗留 (keyinfo 直接在 drive 根 / .app 在分区2) 也会被两侧
+    联合清扫, 其余文件一概不动。
     """
-    for name in (KEYINFO_NAME, MANIFEST_NAME, config.VIEWER_EXE_NAME,
-                 config.VIEWER_EXE_NAME_DOTTED):
-        p = drive / name
-        if p.exists():
-            _make_writable(p)
-            p.unlink()
-    for root in (drive, mac_root):
-        if root is None:
-            continue
-        for dirname in (DATA_DIR_NAME, config.VIEWER_DIR_NAME,
-                        config.VIEWER_WIN_DIR_NAME_DOTTED, config.VIEWER_MAC_DIR_NAME):
+    roots = [drive] + ([chain_root] if chain_root is not None else [])
+    for root in roots:
+        # 先清防误删 deny (2026-09-28): 带着拒删 ACL 时 unlink/rmtree 会被
+        # 内核拒绝。分区根只摘根上非继承 (DC), 非递归 —— 2026-09-29 真机
+        # 事故: 从分区根整树 /t 会踩进 System Volume Information (管理员
+        # 亦无权, icacls rc=5); 交付树走整树 /t, 根下散文件 (含 +H+S 隐藏
+        # 的链文件) 单点摘, 由下方名单逐项负责, 不靠根递归兜底
+        _strip_delete_denial(root, recurse=False)
+        # v2.4.7 点前缀换代: 同步清旧明文名 (单分区旧盘重烧不留残链 —— 残留
+        # 的旧 keyinfo 是别的 SEED 的盐, 留着只会污染 Mac 观感与排障)
+        for name in (
+            KEYINFO_NAME,
+            KEYINFO_NAME_LEGACY,
+            MANIFEST_NAME,
+            MANIFEST_NAME_LEGACY,
+            *_ALL_EXE_NAMES,
+        ):
+            p = root / name
+            if p.exists():
+                _strip_delete_denial(p)
+                _make_writable(p)
+                p.unlink()
+        for dirname in (DATA_DIR_NAME, DATA_DIR_NAME_LEGACY, *_ALL_VIEWER_DIR_NAMES):
             d = root / dirname
             if d.exists():
+                _strip_delete_denial(d)
                 for f in _iter_files(d):
                     _make_writable(f)
                 shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
+# NTFS 防误删 (2026-09-28 用户评审通过, 探针矩阵定案: 两级都拒)
+# ---------------------------------------------------------------------------
+
+
+def _apply_delete_denial(drive: Path, chain_root: Path, data_dir: Path) -> tuple[bool, list[str]]:
+    """烧录收尾施加 NTFS 拒删 ACL: 分区根 deny (DC) + 交付树 deny (OI)(CI)(DE,DC)
+    + 散文件 deny (DE) —— 配方与实证依据见 ntfs_guard 模块 docstring。
+
+    只在 NTFS 卷上施加 (exFAT 无 ACL): 非 NTFS 记警告不阻断 (单分区烧到
+    exFAT 盘是合法场景, 只是防误删缺席)。施加失败 = BurnError 熔断 (与
+    分区2卷标同级: NTFS 交付形态下这是防误删的承诺基础, 坏盘不出仓;
+    失败残留的半套 deny 由重跑烧录的 _strip_delete_denial 清障自愈)。
+    返回 (是否全部目标卷都施加成功, 警告列表)。
+    """
+    warnings: list[str] = []
+    roots: list[tuple[Path, str]] = [(drive, "阅览器卷")]
+    if chain_root != drive:
+        roots.append((chain_root, "加密链卷"))
+    all_applied = True
+    for root, label in roots:
+        fs = ntfs_guard.fs_name(root)
+        if fs.upper() != "NTFS":
+            all_applied = False
+            warnings.append(
+                f"{label}非 NTFS ({fs or '读不出'}): 防误删 ACL 未施加 "
+                "(exFAT 无 ACL —— 只读位挡不住 Explorer 删除, 见 README 防得住/防不住)"
+            )
+            continue
+        try:
+            ntfs_guard.deny_delete_children(root)
+            if root == chain_root:  # 加密链: 密文树 + 根下散链文件
+                ntfs_guard.deny_delete_tree(data_dir)
+                ntfs_guard.deny_delete_file(chain_root / KEYINFO_NAME)
+                ntfs_guard.deny_delete_file(chain_root / MANIFEST_NAME)
+            if root == drive:  # 阅览器卷: 双阅览器树 (+ 历史名残留) + 散 exe
+                for dirname in _ALL_VIEWER_DIR_NAMES:
+                    d = drive / dirname
+                    if d.is_dir():
+                        ntfs_guard.deny_delete_tree(d)
+                for exe_name in _ALL_EXE_NAMES:
+                    f = drive / exe_name
+                    if f.is_file():
+                        ntfs_guard.deny_delete_file(f)
+        except ntfs_guard.NtfsGuardError as exc:
+            raise BurnError(f"防误删 ACL 施加失败 ({label}): {exc}") from exc
+    return all_applied, warnings
+
+
+def _strip_delete_denial(path: Path, *, recurse: bool = True) -> None:
+    """重烧/清扫前的清障: 摘掉本工具施加的防误删 deny (整树 /t, 探针试验C
+    实证配方 —— 单文件 /remove:d 对继承 ACE 会返回成功但实际没摘)。
+    recurse=False 供分区根 (只带非继承 (DC), 且递归会踩 System Volume
+    Information, 见 ntfs_guard.strip_delete_denial docstring)。
+
+    非 NTFS (exFAT 旧盘/非 Windows) 无 ACL, no-op。失败上抛 BurnError:
+    摘不掉就动不了盘, 必须让操作者看见根因, 而不是让后续 unlink 报一串
+    PermissionError。
+    """
+    if sys.platform != "win32" or not ntfs_guard.is_ntfs(path):
+        return
+    try:
+        ntfs_guard.strip_delete_denial(path, recurse=recurse)
+    except ntfs_guard.NtfsGuardError as exc:
+        raise BurnError(f"清除旧防误删 ACL 失败 ({path}): {exc}") from exc
+
+
+def _volume_fs(root: Path) -> str:
+    """卷文件系统名 (烧录侧包装, 供测试注入); 读不出 = ""。"""
+    try:
+        return get_volume_fs(root)
+    except Exception:  # noqa: BLE001 —— 判据类读不出按 "" 处理 (走重建)
+        return ""
+
+
+def _fs_not_ntfs(root: Path, which: str, warnings_out: list[str]) -> bool:
+    """复用判据之三 (2026-09-28 换格式=换代): 任一分区非 NTFS (含读不出/RAW)
+    即判全盘重建 —— 沿"换名=换代"同一先例: exFAT 旧形态盘没有防误删 ACL,
+    不能借复用路径一直留存。原因写入 warnings_out。"""
+    fs = _volume_fs(root)
+    if fs.upper() == "NTFS":
+        return False
+    warnings_out.append(
+        f"{which}为 {fs or '读不出'} (2026-09-28 前的 exFAT 形态, 换格式=换代): "
+        "全盘重建为 NTFS 交付形态"
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
 # 查看器产物解析与字节级复读 (设计 D3: 一只盘同时携带 Win/Mac 查看器)
 # ---------------------------------------------------------------------------
+
 
 def _sha256_file(p: Path) -> str:
     h = hashlib.sha256()
@@ -287,9 +461,59 @@ def _verify_artifact(src: Path, dst: Path) -> None:
     dst_map = {f.relative_to(dst).as_posix(): _sha256_file(f) for f in _iter_files(dst)}
     if src_map != dst_map:
         raise BurnError(
-            f"查看器产物复读校验失败: {dst} "
-            f"(源 {len(src_map)} 文件, 盘上 {len(dst_map)} 文件)"
+            f"查看器产物复读校验失败: {dst} (源 {len(src_map)} 文件, 盘上 {len(dst_map)} 文件)"
         )
+
+
+def _resolve_dual_launcher(opts: BurnOptions, warnings: list[str]) -> Path | None:
+    """解析书名引导壳 exe (v2.4.5): 指定 → dist 查找 → Windows 自动构建。"""
+    if opts.launcher_exe is not None:
+        if not opts.launcher_exe.is_file():
+            raise BurnError(f"指定的书名引导壳不存在: {opts.launcher_exe}")
+        return opts.launcher_exe
+    dist = config.MODULE_DIR / "dist"
+    exe_name = f"{config.VIEWER_LAUNCHER_BUILD_NAME}.exe"
+    for cand in (dist / exe_name, dist / "win" / exe_name):
+        if cand.is_file():
+            return cand
+    if sys.platform != "win32":
+        return None  # Mac 烧录机无法构建; 缺壳熔断由 _install_dual_launcher 调用处给出
+    try:
+        from src.app.usb_vault.viewer import build_viewer
+    except ImportError:
+        return None
+    warnings.append("未找到书名引导壳, 正在自动构建 (需要 PyInstaller)...")
+    try:
+        return build_viewer.build_launcher(dist)
+    except build_viewer.BuildError as exc:
+        raise BurnError(f"书名引导壳自动构建失败: {exc}") from exc
+
+
+def _install_dual_launcher(viewer_dst: Path, launcher_src: Path) -> None:
+    """把书名引导壳拷入双入口目录并改书名 (v2.4.5)。
+
+    收件人双击的书名 exe (VIEWER_INNER_EXE_NAME_DUAL) = 自包含 onefile 引导
+    壳: 目录完整时转交旁边的真主程序 (VIEWER_EXE_NAME, 保持构建名不再改
+    名), 残缺 (书名 exe 被单独拷走) 时弹 config.DETACHED_MESSAGE —— onedir
+    真主程序被单独拷走会死在 PyInstaller C 装载器层 ("Failed to load Python
+    DLL"), Python 尚未启动, v2.4.4 应用层门禁没有机会跑, 壳是唯一能把中文
+    谢幕文案送到屏幕上的层 (2026-09-23 用户复测曝光, 根治)。
+    先决条件 (load-bearing): 目录里必须有构建名真主程序, 壳按名转交; 缺失 =
+    转交链断裂 (盘上双击书名只会弹谢幕框), 熔断而非告警。
+    """
+    real_exe = viewer_dst / config.VIEWER_EXE_NAME
+    if not real_exe.is_file():
+        raise BurnError(
+            f"目录版查看器缺构建名主程序 {config.VIEWER_EXE_NAME}, "
+            f"书名引导壳无从转交 (自定义产物请保持 PyInstaller --name 不变)"
+        )
+    final_exe = viewer_dst / config.VIEWER_INNER_EXE_NAME_DUAL
+    if final_exe.exists():  # 重烧残留 (旧版改名留下的真主程序 / 前次引导壳)
+        _make_writable(final_exe)
+        final_exe.unlink()
+    _copy_artifact(launcher_src, final_exe)
+    if _sha256_file(launcher_src) != _sha256_file(final_exe):
+        raise BurnError(f"书名引导壳拷贝复读校验失败: {final_exe}")
 
 
 def seed_fingerprint(seed: bytes) -> str:
@@ -297,21 +521,22 @@ def seed_fingerprint(seed: bytes) -> str:
     return hashlib.sha256(seed).hexdigest()[:12]
 
 
-def _check_embedded_seed(viewer: Path, embedded_rels: tuple[str, ...], seed: bytes,
-                         label: str, *, strict: bool = False) -> None:
+def _check_embedded_seed(
+    viewer: Path, embedded_rels: tuple[str, ...], seed: bytes, label: str, *, strict: bool = False
+) -> None:
     """烧录前读出查看器产物内嵌 seed.bin 与本机 SEED 比对。
 
     2026-09 真机案例: Mac 构建目录缺 seed.bin 时 build-viewer 会静默生成
     全新 SEED, 产出的 .app 内嵌错钥匙, 在 Mac 上表现恒为"仅限指定的U盘使用"。
     strict (mac .app, 结构里必有): 缺文件即失败; 否则 (win onefile 无独立文件) 跳过。
     """
-    p = next((viewer / rel for rel in embedded_rels
-              if (viewer / rel).is_file()), None)
+    p = next((viewer / rel for rel in embedded_rels if (viewer / rel).is_file()), None)
     if p is None:
         if strict:
             raise BurnError(
                 f"{label}查看器结构异常: 缺 {' 或 '.join(embedded_rels)} "
-                f"(不是本工具构建的产物?): {viewer}")
+                f"(不是本工具构建的产物?): {viewer}"
+            )
         return
     embedded = p.read_bytes()
     if embedded == seed:
@@ -344,7 +569,8 @@ def _check_mac_app_structure(app: Path) -> None:
     plist = app / "Contents" / "Info.plist"
     if not plist.is_file():
         raise BurnError(
-            f"macOS 查看器结构异常: 缺 {plist} —— 不是完整的 .app。\n" + _MAC_TRANSIT_FIX)
+            f"macOS 查看器结构异常: 缺 {plist} —— 不是完整的 .app。\n" + _MAC_TRANSIT_FIX
+        )
     try:
         info = plistlib.loads(plist.read_bytes())
     except Exception as exc:  # plist 损坏形式多样: InvalidFile/ExpatError/解码错
@@ -356,7 +582,169 @@ def _check_mac_app_structure(app: Path) -> None:
     if not exe_name or not exe.is_file() or exe.stat().st_size == 0:
         raise BurnError(
             f"macOS 查看器结构异常: Info.plist 声明的可执行文件 '{exe_name}' "
-            f"不在 Contents/MacOS/ 里或为空 —— Mac 上双击将无反应。\n" + _MAC_TRANSIT_FIX)
+            f"不在 Contents/MacOS/ 里或为空 —— Mac 上双击将无反应。\n" + _MAC_TRANSIT_FIX
+        )
+
+
+# Mach-O 嵌入签名 SuperBlob 魔数 (CSMAGIC_EMBEDDED_SIGNATURE): cdhash 类封条
+# 条目的底线检查用 —— 嵌套已签名代码 (dylib/.so) 的完整性靠各自嵌入签名保证。
+_SUPERBLOB_MAGIC = bytes.fromhex("fade0cc0")
+# Mach-O 魔数 (32/64 位 + 字节序反转 + fat/universal): cdhash 条目按 codesign
+# 语义分型用 —— 只对真 Mach-O 要求嵌入签名魔数 (2026-09-29(c) 真机: codesign
+# 对 Frameworks 顶层的非 Mach-O 数据文件同样落 cdhash 条目且不写入嵌入签名,
+# base_library.zip/seed.bin 实证与 Resources 侧 hash2 锚定的原件逐字节相同)。
+_MACHO_MAGICS = tuple(bytes.fromhex(h) for h in (
+    "feedface", "feedfacf", "cefaedfe", "cffaedfe", "cafebabe", "bebafeca"))
+
+
+def _is_macho(raw: bytes) -> bool:
+    return raw[:4] in _MACHO_MAGICS
+
+
+def _check_mac_app_seal(app: Path) -> None:
+    """烧录前把 .app 文件树与签名封条 (_CodeSignature/CodeResources) 逐文件比对。
+
+    2026-09-25 真机定谳 (当日二次修正): 新版 PyInstaller 的 .app 布局含大量
+    符号链接 (实测 54 处), Info-ZIP `zip -r` 打包默认跟随链接成副本、exFAT
+    又无链接语义 —— 中转/烧录后封条逐条登记的链接位必失守, 收件人 Mac 弹
+    「已损坏, 无法打开」; 骨架检查与 SEED 比对全部放行。封条级比对
+    (plist + sha1/sha256) 在烧录机 Windows 上即可完成, 让这类产物上不了盘。
+
+    封条条目三种形态都要认 (只认 hash 会大面积误报):
+    - 符号链接: 旧版 codesign 记 "link", 新版记 "symlink" —— 盘上须真是链接;
+    - 嵌套已签名代码 (dylib/.so): 只有 cdhash/requirement 无内容哈希, 改验
+      文件内 Mach-O 嵌入签名魔数 (完整校验在收件人 Mac);
+    - 普通文件: sha1/sha256 逐字节比对, 缺失仅 optional 条目放行。
+
+    允许的封条外文件与 codesign 口径对齐: Info.plist 与主程序 (各自有独立
+    签名通道)、嵌套框架自身的 _CodeSignature、顶层 CodeResources (装订票据)、
+    .DS_Store 与 ._xxx AppleDouble 残留 (codesign 官方忽略清单)。树里若存在
+    真实符号链接, 即使与封条一致也熔断 —— exFAT 承载不了, 烧了必坏。
+    """
+    contents = app / "Contents"
+    seal_path = contents / "_CodeSignature" / "CodeResources"
+    if not seal_path.is_file():
+        raise BurnError(
+            f"macOS 查看器与签名封条不符: 缺 {seal_path} —— 产物没有签名封条\n"
+            "  (未签名, 或封条在中转中丢失)。本工具构建的产物最差也带 ad-hoc 封条,\n"
+            "  没有封条的一律不许上盘。\n"
+            "  修复: Mac 上用最新代码重新 build-viewer 产物齐套后重烧。"
+        )
+    try:
+        seal = plistlib.loads(seal_path.read_bytes())
+    except Exception as exc:
+        raise BurnError(
+            f"macOS 查看器与签名封条不符: 封条无法解析 ({exc}): {seal_path}"
+        ) from exc
+
+    problems: list[str] = []
+    sealed: set[str] = set()
+    sealed_bundles: list[str] = []  # cdhash 目录条目 = 嵌套代码包 (.framework 等)
+    for group in ("files", "files2"):
+        for rel, val in dict(seal.get(group) or {}).items():
+            entry = val if isinstance(val, dict) else {"hash": val}
+            sealed.add(rel)
+            p = contents / rel
+            # 符号链接条目: 旧版 codesign 记 "link", 新版记 "symlink"
+            # (2026-09-25(b): 新版 PyInstaller 布局 54 处链接, 只认 link 键会把
+            #  被中转拍平的链接误报成"缺失/哈希不符")
+            link_target = entry.get("link", entry.get("symlink"))
+            if link_target is not None:
+                if isinstance(link_target, bytes):
+                    link_target = link_target.decode("utf-8", "replace")
+                if not p.is_symlink():
+                    problems.append(
+                        f"符号链接失守: {rel} (封条要求链接→{link_target}, "
+                        "盘上是普通文件/目录)"
+                    )
+                continue
+            if p.is_dir():
+                # 嵌套代码包条目 (2026-09-29(c) 真机定谳: 扁平化后的
+                # Python.framework 在封条里是一条 cdhash 目录条目, 包内文件
+                # 登记在包自己的内封条, 外封条不含): 要求目录在位 + 包内必有
+                # _CodeSignature/CodeResources (扁平框架在包根, 版本化在
+                # Versions/<v>/Resources/ 下); 子树整体视为已封, 多余扫描跳过。
+                has_inner = any(
+                    (q / "CodeResources").is_file()
+                    for q in p.rglob("_CodeSignature") if q.is_dir())
+                if not has_inner:
+                    problems.append(f"嵌套代码包缺内封条: {rel}")
+                sealed_bundles.append(rel)
+                continue
+            if not p.is_file():
+                if not entry.get("optional"):
+                    problems.append(f"封条文件缺失: {rel}")
+                continue
+            raw = p.read_bytes()
+            if "hash" not in entry and "hash2" not in entry:
+                # 嵌套已签名代码条目 (cdhash/requirement): 内容哈希不在封条里
+                # (完整性由各自嵌入签名保证), 完整校验在收件人 Mac。烧录机侧
+                # 底线检查按 codesign 语义分两型 (2026-09-29(c) 真机: codesign
+                # 对 Frameworks 顶层的非 Mach-O 数据文件同样落 cdhash 条目且
+                # 不写入嵌入签名 —— base_library.zip/seed.bin 与 Resources 侧
+                # hash2 锚定原件逐字节相同, 一律强求魔数必误报):
+                # - Mach-O (含 fat/universal) → 必须内嵌签名 SuperBlob 魔数;
+                # - 非 Mach-O 数据 → 在位即可 (cdhash 完整性收件人 Mac 验)。
+                if _is_macho(raw) and _SUPERBLOB_MAGIC not in raw:
+                    problems.append(f"嵌套签名代码异常 (无嵌入签名魔数): {rel}")
+                continue
+            ok = False
+            for key, algo in (("hash2", "sha256"), ("hash", "sha1")):
+                want = entry.get(key)
+                if isinstance(want, str):  # 手写/异构封条可能落 base64 文本
+                    want = base64.b64decode(want)
+                if want and hashlib.new(algo, raw).digest() == want:
+                    ok = True
+                    break
+            if not ok:
+                problems.append(f"哈希不符: {rel}")
+
+    try:
+        exe_name = str(plistlib.loads(
+            (contents / "Info.plist").read_bytes()).get("CFBundleExecutable") or "")
+    except Exception:
+        exe_name = ""
+    allowed_extra = {"Info.plist", "CodeResources", f"MacOS/{exe_name}"}
+    if exe_name:
+        # 主程序不在封条哈希清单里 (独立签名通道), 却是外层签名+装订票据的
+        # 载体 —— 底线查一次 Mach-O 嵌入签名魔数, 中转损坏当在此拦下。
+        exe_path = contents / "MacOS" / exe_name
+        exe_raw = exe_path.read_bytes() if exe_path.is_file() else b""
+        if exe_raw and _is_macho(exe_raw) and _SUPERBLOB_MAGIC not in exe_raw:
+            problems.append(f"主程序无嵌入签名: MacOS/{exe_name}")
+    for p in contents.rglob("*"):
+        if p.is_symlink():
+            # 树里存在真实符号链接: 就算与封条一致, 烧到 exFAT (无链接语义) 也必失守
+            problems.append(
+                f"产物含符号链接 (exFAT 无法承载): {p.relative_to(contents).as_posix()}"
+            )
+            continue
+        # ._xxx 是 AppleDouble 中转残留 (macOS xattr 摆渡件), .DS_Store 是 Finder
+        # 垃圾 —— codesign 官方忽略清单, 上盘前亦无意义
+        if not p.is_file() or p.name == ".DS_Store" or p.name.startswith("._"):
+            continue
+        rel = p.relative_to(contents).as_posix()
+        if rel in sealed or rel in allowed_extra:
+            continue
+        if any(rel == b or rel.startswith(b + "/") for b in sealed_bundles):
+            continue  # 嵌套代码包子树: 由包自己的内封条负责
+        if "_CodeSignature" in p.relative_to(contents).parts:  # 嵌套框架自身封条
+            continue
+        problems.append(f"封条外多余文件: {rel}")
+
+    if problems:
+        shown = "\n  ".join(problems[:6])
+        more = f"\n  …共 {len(problems)} 处" if len(problems) > 6 else ""
+        raise BurnError(
+            "macOS 查看器与签名封条不符 —— 这份 .app 上盘后收件人 Mac 必弹\n"
+            f"「已损坏，无法打开」:\n  {shown}{more}\n"
+            "  常见根因 (2026-09-25 真机定谳): 新版 PyInstaller 布局含大量符号链接\n"
+            "  (zip 打包会跟随成副本 / exFAT 无链接语义), 中转后封条必对不上;\n"
+            "  或 Mac dist 在签名之后又被改动。两条都是 Mac 侧整链重走:\n"
+            "  ①同步最新代码 (build-viewer 签名前自动去链接化) → rm -rf dist build\n"
+            "  → build-viewer --sign → 公证 → staple → 立即打包传烧录机;\n"
+            "  ②烧录机解压到全新空目录后重烧 (本闸门兜底)。"
+        )
 
 
 def _resolve_win_viewer(opts: BurnOptions, seed: bytes, warnings: list[str]) -> Path | None:
@@ -379,6 +767,8 @@ def _resolve_win_viewer(opts: BurnOptions, seed: bytes, warnings: list[str]) -> 
         warnings.append(
             "在 Mac 上无法构建 Windows 查看器 —— 用 --viewer-exe 指定从烧录机"
             "拷来的 Windows 产物 (dist/图书阅览器 目录或 .exe); "
+            "目录版双入口还需 --launcher-exe 指定 dist/"
+            f"{config.VIEWER_LAUNCHER_BUILD_NAME}.exe (v2.4.5 书名引导壳)。"
             "缺省则本盘仅含 macOS 查看器。"
         )
         return None
@@ -402,10 +792,12 @@ def _resolve_mac_viewer(opts: BurnOptions, warnings: list[str]) -> Path | None:
         return opts.viewer_mac
     dist = config.MODULE_DIR / "dist"
     ascii_app = f"{config.VIEWER_MAC_BUILD_NAME}.app"  # 新版 ASCII 产物名
-    for cand in (dist / config.VIEWER_MAC_DIR_NAME,   # 旧版中文名产物
-                 dist / ascii_app,
-                 dist / "mac" / config.VIEWER_MAC_DIR_NAME,
-                 dist / "mac" / ascii_app):
+    for cand in (
+        dist / config.VIEWER_MAC_DIR_NAME,  # 旧版中文名产物
+        dist / ascii_app,
+        dist / "mac" / config.VIEWER_MAC_DIR_NAME,
+        dist / "mac" / ascii_app,
+    ):
         if cand.is_dir():
             return cand
     warnings.append(
@@ -416,9 +808,37 @@ def _resolve_mac_viewer(opts: BurnOptions, warnings: list[str]) -> Path | None:
     return None
 
 
+def _resolve_mac_viewer_intel(opts: BurnOptions, warnings: list[str]) -> Path | None:
+    """解析 Intel 版 macOS 查看器 (2026-10-02 双架构交付)。
+
+    与 Apple 版 (vault_viewer.app) 同一套检查 (骨架/SEED/封条) 在 burn() 主流程
+    逐 app 施加; 这里只定位来源。单分区模式不消费 (单 app 形态无芯片之分)。
+    """
+    if opts.viewer_mac_intel is not None:
+        if not opts.viewer_mac_intel.is_dir():
+            raise BurnError(f"指定的 Intel 版 macOS 查看器目录不存在: {opts.viewer_mac_intel}")
+        return opts.viewer_mac_intel
+    dist = config.MODULE_DIR / "dist"
+    intel_app = f"{config.VIEWER_MAC_BUILD_NAME_INTEL}.app"
+    for cand in (
+        dist / intel_app,
+        dist / "mac-intel" / config.VIEWER_MAC_BUILD_NAME,
+    ):
+        if cand.is_dir():
+            return cand
+    warnings.append(
+        f"未找到 Intel 版 macOS 查看器 (dist/{intel_app}); "
+        "双入口交付盘要求双架构 Mac 入口。"
+        "在 Mac 上用 arch -x86_64 venv 再跑一次 build-viewer 后, "
+        "改名 vault_viewer_intel.app 放进 dist/, 或用 --viewer-mac-intel 指定。"
+    )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
+
 
 def burn(
     source: Path,
@@ -433,20 +853,31 @@ def burn(
     seed = seed if seed is not None else get_or_create_seed()
     source = Path(source)
     drive = _normalize_root(Path(drive))
+    # v2.4.0 反转布局: 加密链 (keyinfo/manifest/DATA) 全套落在 chain_root
+    # (双入口 = 分区2临时根; 单分区 = drive 本身)。序列号绑定因此锚定在
+    # 加密链所在卷 —— 双入口盘即分区2, 与阅览器卷解耦。
+    chain_root = (
+        drive
+        if opts.chain_partition_root is None
+        else _normalize_root(Path(opts.chain_partition_root))
+    )
 
     # ---- 前置检查 -------------------------------------------------------
     if not source.is_dir():
         raise BurnError(f"源目录不存在: {source}")
     if opts.require_root and not is_volume_root(drive):
         raise BurnError(f"目标必须是卷根 (如 E:/), 当前: {drive}")
+    if opts.require_root and chain_root is not drive and not is_volume_root(chain_root):
+        raise BurnError(f"加密链目标必须是卷根 (如 K:/), 当前: {chain_root}")
     if not drive.exists():
         if is_volume_root(drive):  # 形如 F:\ 的卷根不存在 = 盘没插/盘符错
             raise BurnError(
                 f"目标盘不存在: {drive} 请插好U盘并核对盘符 "
-                "(资源管理器'此电脑', 或 PowerShell 运行 Get-Volume)")
+                "(资源管理器'此电脑', 或 PowerShell 运行 Get-Volume)"
+            )
         drive.mkdir(parents=True, exist_ok=True)  # 测试目录则现建
     try:
-        serial = serial_getter(drive)
+        serial = serial_getter(chain_root)
     except Exception as exc:  # VolumeIdError 等
         raise BurnError(f"读取目标卷序列号失败: {exc}") from exc
 
@@ -465,7 +896,7 @@ def burn(
         raise BurnError(f"源目录没有文件: {source}")
 
     total_source = sum(f.stat().st_size for f, _ in files)
-    free = shutil.disk_usage(drive).free
+    free = shutil.disk_usage(chain_root).free
     if total_source + 128 * 1024 * 1024 > free:
         raise BurnError(
             f"目标空间可能不足: 需约 {total_source / 1e6:.1f}MB+, 剩余 {free / 1e6:.1f}MB"
@@ -501,14 +932,11 @@ def burn(
     # ---- Office -> PDF ---------------------------------------------------
     converted: dict[Path, Path] = {}
     office_left_binary: list[str] = []
-    office_files = [(f, rel) for f, rel in files
-                    if f.suffix.lower() in config.OFFICE_EXTS]
+    office_files = [(f, rel) for f, rel in files if f.suffix.lower() in config.OFFICE_EXTS]
     convert_tmpdir: Path | None = None
     try:
         if office_files and opts.convert_office:
-            missing_apps = office_convert.missing_apps(
-                [f for f, _ in office_files], opts.converter
-            )
+            missing_apps = office_convert.missing_apps([f for f, _ in office_files], opts.converter)
             if missing_apps:
                 names = ", ".join(sorted({rel for _, rel in office_files}))
                 raise BurnError(
@@ -528,13 +956,14 @@ def burn(
         license_nonce = os.urandom(16)
         code = unlock_code.generate() if opts.use_password else None
         data_key = derive_data_key(
-            seed, license_nonce, serial,
+            seed,
+            license_nonce,
+            serial,
             unlock_code=(unlock_code.derive_component(code) if code is not None else None),
         )
 
-        _clear_own_artifacts(
-            drive, mac_root=opts.mac_partition_root if opts.dual_entry else None)
-        data_dir = drive / DATA_DIR_NAME
+        _clear_own_artifacts(drive, chain_root=chain_root if chain_root is not drive else None)
+        data_dir = chain_root / DATA_DIR_NAME
         data_dir.mkdir(parents=True, exist_ok=True)
 
         entries: list[FileEntry] = []
@@ -543,8 +972,15 @@ def burn(
         for src_file, rel in files:
             was_converted = src_file in converted
             actual = converted.get(src_file, src_file)
-            entry = _encrypt_one(data_key, actual, rel, src_file.suffix.lower(),
-                                 data_dir, used_ids, was_converted=was_converted)
+            entry = _encrypt_one(
+                data_key,
+                actual,
+                rel,
+                src_file.suffix.lower(),
+                data_dir,
+                used_ids,
+                was_converted=was_converted,
+            )
             entries.append(entry)
             total_plain += entry.size
             total_enc += entry.enc_size
@@ -562,9 +998,10 @@ def burn(
         files=sorted(entries, key=lambda e: e.rel_path),
         av_scanned=({"engine": av_engine, "time": now_iso()} if av_engine else None),
     )
-    (drive / KEYINFO_NAME).write_bytes(
-        inspector.build_keyinfo(license_nonce, password_mode=code is not None))
-    (drive / MANIFEST_NAME).write_bytes(encrypt_manifest(manifest, data_key))
+    (chain_root / KEYINFO_NAME).write_bytes(
+        inspector.build_keyinfo(license_nonce, password_mode=code is not None)
+    )
+    (chain_root / MANIFEST_NAME).write_bytes(encrypt_manifest(manifest, data_key))
 
     # ---- 查看器 (Windows + macOS 双产物, 设计 D3) -------------------------
     viewer_used = _resolve_win_viewer(opts, seed, warnings)
@@ -576,25 +1013,66 @@ def burn(
         viewer_dst = drive / (viewer_dir_name if viewer_used.is_dir() else viewer_exe_name)
         _copy_artifact(viewer_used, viewer_dst)
         _verify_artifact(viewer_used, viewer_dst)
+        if viewer_used.is_dir() and opts.dual_entry:
+            launcher = _resolve_dual_launcher(opts, warnings)
+            if launcher is None:
+                raise BurnError(
+                    "双入口目录版需要书名引导壳 (v2.4.5, 单拷书名 exe 的中文谢幕"
+                    "文案靠它送达): Windows 上重跑 build-viewer / burn 会自动构建; "
+                    "Mac 烧录机请从 Windows 构建机拷 dist/"
+                    f"{config.VIEWER_LAUNCHER_BUILD_NAME}.exe, 用 --launcher-exe 指定。"
+                )
+            _install_dual_launcher(viewer_dst, launcher)
 
-    viewer_mac_used = _resolve_mac_viewer(opts, warnings)
-    if viewer_mac_used is not None:
-        _check_mac_app_structure(viewer_mac_used)  # 先验骨架 (SEED 对但骨架坏照样打不开)
+    # 2026-10-02 双架构: Mac 入口按芯片一分为二。Apple 版 (主 app) 缺失沿旧制
+    # 仅告警 (单分区/单 Mac 形态合法); 双入口交付盘必须两架构齐备 —— Intel 版
+    # 缺失直接熔断, 不烧"只有一半 Mac 收件人能打开"的盘。
+    mac_apps: list[tuple[Path, bool]] = []  # (源 .app, 是否 Intel 版)
+    apple_app = _resolve_mac_viewer(opts, warnings)
+    if apple_app is not None:
+        mac_apps.append((apple_app, False))
+    if opts.dual_entry:
+        intel_app = _resolve_mac_viewer_intel(opts, warnings)
+        if intel_app is None:
+            raise BurnError(
+                "双入口模式需要双架构 macOS 查看器 (Apple 芯片 + Intel): "
+                "用 --viewer-mac-intel 指定, 或把 "
+                f"{config.VIEWER_MAC_BUILD_NAME_INTEL}.app 放进 dist/"
+            )
+        mac_apps.append((intel_app, True))
+    viewer_mac_used: Path | None = None
+    viewer_mac_intel_used: Path | None = None
+    for src, is_intel in mac_apps:
+        _check_mac_app_structure(src)  # 先验骨架 (SEED 对但骨架坏照样打不开)
         _check_embedded_seed(
-            viewer_mac_used,
-            ("Contents/Frameworks/seed.bin",   # PyInstaller .app 常规落点
-             "Contents/Resources/seed.bin",    # 个别版本/配置的备选
-             "Contents/MacOS/seed.bin"),
-            seed, "macOS", strict=True)
-        mac_dst = ((opts.mac_partition_root / config.VIEWER_MAC_DIR_NAME)
-                   if opts.dual_entry and opts.mac_partition_root is not None
-                   else drive / config.VIEWER_MAC_DIR_NAME)
-        _copy_artifact(viewer_mac_used, mac_dst)
-        _verify_artifact(viewer_mac_used, mac_dst)
+            src,
+            (
+                "Contents/Frameworks/seed.bin",  # PyInstaller .app 常规落点
+                "Contents/Resources/seed.bin",  # 个别版本/配置的备选
+                "Contents/MacOS/seed.bin",
+            ),
+            seed,
+            "macOS",
+            strict=True,
+        )
+        # 封条级比对 (最后, 骨架+SEED 都对仍可能整体失守): 拦"签名之后又被改动/
+        # 混入另一次构建产物"的缝合 .app —— 2026-09-25 真机: 封条只认 Frameworks/
+        # 一棵树, 盘上却多了 Resources/ 整棵, 收件人 Mac 弹「已损坏, 无法打开」。
+        # 两个架构版各自走一遍 (缝合/损坏不分会带哪个芯片的壳)。
+        _check_mac_app_seal(src)
+        # v2.4.0 反转布局: .app 与 Windows 阅览器同在分区1 (可见卷);
+        # 2026-09-23 用户定稿: 双入口落盘名收件人一眼可辨; 2026-10-02 起 Mac
+        # 入口按芯片一分为二, 收件人按「关于本机 → 芯片/处理器」对号入座
+        mac_dst = drive / _mac_viewer_name(opts, intel=is_intel)
+        _copy_artifact(src, mac_dst)
+        _verify_artifact(src, mac_dst)
+        if is_intel:
+            viewer_mac_intel_used = src
+        else:
+            viewer_mac_used = src
 
-    # ---- 复检 -------------------------------------------------------------
-    report = inspector.verify_drive(drive, seed, serial_getter=serial_getter,
-                                    unlock_code=code)
+    # ---- 复检 (对加密链所在卷做, 序列号/内容一致性同链路) -------------------
+    report = inspector.verify_drive(chain_root, seed, serial_getter=serial_getter, unlock_code=code)
     verify_ok = report.all_ok
     if not verify_ok:
         bad = "; ".join(f"{r.rel_path}: {r.error or '哈希不符'}" for r in report.failed)
@@ -602,34 +1080,41 @@ def burn(
 
     # ---- 只读化 -----------------------------------------------------------
     if opts.apply_readonly:
-        extras = [drive / KEYINFO_NAME, drive / MANIFEST_NAME]
-        for exe_name in (config.VIEWER_EXE_NAME, config.VIEWER_EXE_NAME_DOTTED):
+        extras = [chain_root / KEYINFO_NAME, chain_root / MANIFEST_NAME]
+        for exe_name in _ALL_EXE_NAMES:
             exe_dst = drive / exe_name
             if exe_dst.is_file():
                 extras.append(exe_dst)
-        for dirname in (config.VIEWER_DIR_NAME, config.VIEWER_WIN_DIR_NAME_DOTTED,
-                        config.VIEWER_MAC_DIR_NAME):
+        for dirname in _ALL_VIEWER_DIR_NAMES:
             d = drive / dirname
             if d.is_dir():
-                extras += _iter_files(d)  # onedir/.app 逐文件只读
-        if opts.dual_entry and opts.mac_partition_root is not None:
-            p2_app = opts.mac_partition_root / config.VIEWER_MAC_DIR_NAME
-            if p2_app.is_dir():
-                extras += _iter_files(p2_app)  # 分区2上的 .app 同样只读 (不隐藏)
+                extras += _iter_files(d)  # onedir/.app 逐文件只读 (v2.4.0 全在分区1)
         warnings += set_read_only(data_dir, also=extras)
 
     # ---- 隐藏密文载体 (默认视图不可见; 观感层防线, 失败仅告警不阻断) -------
     if sys.platform == "win32":
-        hide_targets: list[Path] = [drive / KEYINFO_NAME, drive / MANIFEST_NAME,
-                                    data_dir]
+        hide_targets: list[Path] = [chain_root / KEYINFO_NAME, chain_root / MANIFEST_NAME, data_dir]
         hide_targets += _iter_files(data_dir)
-        for dirname in (config.VIEWER_DIR_NAME, config.VIEWER_WIN_DIR_NAME_DOTTED):
-            internal = drive / dirname / "_internal"
-            if internal.is_dir():  # onedir 查看器的依赖树; exe 本体保持可见
+        for dirname in _ALL_VIEWER_DIR_NAMES:
+            vdir = drive / dirname
+            internal = vdir / "_internal"
+            if internal.is_dir():  # onedir 查看器的依赖树
                 hide_targets.append(internal)
+            # v2.4.6: 双入口目录内真主程序 +H+S —— 它顶着一代旧名 (图书阅览器.exe)
+            # 裸露在书名 exe 旁, 2026-09-23 真棒事故里烧录后被当旧版残留清掉, 引导壳
+            # 无从转交。藏到与 _internal 同待遇; 判据 = 书名引导壳在旁 (单分区 onedir
+            # 的同名 exe 是唯一可见入口, 不在藏匿之列)。
+            real_exe = vdir / config.VIEWER_EXE_NAME
+            if real_exe.is_file() and (vdir / config.VIEWER_INNER_EXE_NAME_DUAL).is_file():
+                hide_targets.append(real_exe)
         for p in hide_targets:
             if not set_hidden(p):
                 warnings.append(f"隐藏失败 (加密与盘绑定不受影响, 仅文件名可见): {p.name}")
+
+    # ---- NTFS 防误删 (2026-09-28): 两级 deny ACL, 配方见 ntfs_guard -------
+    # exFAT 单分区合法场景记警告缺席; NTFS 卷施加失败熔断 (坏盘不出仓)
+    deny_ok, deny_warns = _apply_delete_denial(drive, chain_root, data_dir)
+    warnings += deny_warns
 
     if opts.set_label:
         label = opts.title[:11] if fs.upper() == "FAT32" else opts.title[:32]
@@ -650,13 +1135,39 @@ def burn(
         verify_ok=verify_ok,
         viewer_exe_used=viewer_used,
         viewer_mac_used=viewer_mac_used,
+        viewer_mac_intel_used=viewer_mac_intel_used,
         av_engine=av_engine,
         av_duration_s=av_duration,
         unlock_code=code,
         code_archive=archive_path,
         dual_entry=opts.dual_entry,
+        deny_acl_applied=deny_ok,
         warnings=warnings,
     )
+
+
+# 复用路径分区1尺寸检查的容忍差额: exFAT 卷容量略小于分区尺寸属正常
+_P1_FLOOR_SLACK_MIB = 8
+
+
+def _p1_below_target(drive: Path, p1_mib: int, warnings_out: list[str]) -> bool:
+    """复用判据之二 (2026-09-22 用户定稿: 分区1底线 1 GiB): 分区1是拔插
+    可见可读的唯一入口, 底线抬高前烧出的旧小分区1不能借复用路径一直留存
+    (2026-09-22 复盘: 复用只看分区2内容不看分区1尺寸, 旧 542 MiB 盘重烧
+    会静默保持小分区1)。低于本轮应给尺寸 (含容量都读不出的 RAW 卷) 即判
+    重建扩容, 原因写入 warnings_out。"""
+    try:
+        total_mib = shutil.disk_usage(drive).total // (1024 * 1024)
+    except OSError as exc:
+        warnings_out.append(f"分区1容量读不出 ({exc}), 视为不达标: 全盘重建")
+        return True
+    if total_mib + _P1_FLOOR_SLACK_MIB < p1_mib:
+        warnings_out.append(
+            f"分区1仅 {total_mib} MiB, 低于本轮应给 {p1_mib} MiB "
+            f"(底线 {config.VIEWER_PART_MIN_MIB} MiB): 全盘重建扩容"
+        )
+        return True
+    return False
 
 
 def burn_dual(
@@ -668,13 +1179,18 @@ def burn_dual(
     serial_getter: SerialGetter = get_volume_serial,
     confirm_wipe: Callable[[DiskSummary], bool] | None = None,
 ) -> BurnReport:
-    """双入口分区烧录编排: provision/refresh 分区2 → burn() 到分区1 → finalize。
+    """双入口分区烧录编排 (v2.4.0 反转布局): provision/refresh 分区2 →
+    burn() (双阅览器→分区1, 加密链→分区2) → finalize 隐藏分区2。
 
-    磁盘操作全在 disk_layout (Windows 烧录机 + 管理员); 分区1 的序列号绑定与
-    加密链路与单分区完全一致 —— provision 发生在 burn() 读序列号之前, 新
-    分区1 的 exFAT 序列号天然进入密钥派生。既有双入口布局的重烧只刷新
-    分区2 (绝不 clean, 无需确认); 全新/异构布局才清盘重建, 且必须过
-    confirm_wipe 人工确认 (None = 直接拒绝, 不带确认跑 = 脚本误操作的保险丝)。
+    磁盘操作全在 disk_layout (Windows 烧录机 + 管理员)。序列号绑定锚定在
+    加密链所在的分区2, 与单分区链路完全一致 —— provision 发生在 burn()
+    读序列号之前, 新分区2 的 NTFS 序列号 (@0x48, 2026-09-28 起双分区均
+    NTFS) 天然进入密钥派生。既有反转布局的重烧只刷新分区2 (绝不 clean),
+    判据按内容 (挂出后见 keyinfo) —— 但分区1尺寸低于本轮应给 (含 1 GiB
+    底线, 2026-09-22 用户定稿) 或任一分区非 NTFS (2026-09-28 换格式=换代)
+    时改为清盘重建; 旧版布局 (分区2=.app) / 全新 / 异构盘同样清盘重建。
+    凡清盘必过 confirm_wipe 人工确认 (None = 直接拒绝, 不带确认跑 = 脚本
+    误操作的保险丝)。
     """
     if sys.platform != "win32":
         raise BurnError("双入口分区烧录仅在 Windows 烧录机执行")
@@ -692,54 +1208,102 @@ def burn_dual(
     except disk_layout.DiskLayoutError as exc:
         raise BurnError(f"[dual-entry] {exc}") from exc
 
-    # 双入口模式就是为携带 Mac 查看器存在的: 没有产物直接拒烧 (防烧出空分区2)
+    # 双入口模式就是为携带 Mac 查看器存在的: 没有产物直接拒烧 (防烧出空分区2);
+    # 2026-10-02 双架构: Mac 入口按芯片一分为二, Apple + Intel 两版都要在场
+    # (分区编排之前拦下, 不烧一半 Mac 收件人打不开的盘)
     probe_warnings: list[str] = []
     mac_viewer = _resolve_mac_viewer(opts, probe_warnings)
     if mac_viewer is None:
-        raise BurnError("双入口模式需要 macOS 查看器: 用 --viewer-mac 指定, "
-                        "或把 图书阅览器.app 产物放进 dist/")
+        raise BurnError(
+            "双入口模式需要 macOS 查看器: 用 --viewer-mac 指定, 或把 图书阅览器.app 产物放进 dist/"
+        )
     opts.viewer_mac = mac_viewer  # burn() 内二次解析直接命中, 不重复告警
+    mac_viewer_intel = _resolve_mac_viewer_intel(opts, probe_warnings)
+    if mac_viewer_intel is None:
+        raise BurnError(
+            "双入口模式需要 Intel 版 macOS 查看器 (双架构交付): "
+            "在 Mac 上用 arch -x86_64 venv 跑一次 build-viewer 后改名 "
+            f"{config.VIEWER_MAC_BUILD_NAME_INTEL}.app 放进 dist/, "
+            "或用 --viewer-mac-intel 指定。"
+        )
+    opts.viewer_mac_intel = mac_viewer_intel
 
-    app_bytes = sum(f.stat().st_size for f in _iter_files(mac_viewer))
-    p2_mib = disk_layout.p2_size_mib(app_bytes)
+    # 分区1按双阅览器总体积定宽 (v2.4.0 反转布局: 分区1=阅览器, 分区2=加密链;
+    # 2026-10-02 起 Mac 入口 ×2); Windows 阅览器提前解析并回填 opts,
+    # burn() 内二次解析直接命中不重复告警
+    if seed is None:
+        seed = get_or_create_seed()
+    win_viewer = _resolve_win_viewer(opts, seed, probe_warnings)
+    if win_viewer is not None:
+        opts.viewer_exe = win_viewer
+    viewers_bytes = sum(f.stat().st_size for f in _iter_files(mac_viewer))
+    viewers_bytes += sum(f.stat().st_size for f in _iter_files(mac_viewer_intel))
+    if win_viewer is not None:
+        viewers_bytes += sum(f.stat().st_size for f in _iter_files(win_viewer))
+    p1_mib = disk_layout.viewer_part_size_mib(viewers_bytes)
 
     scheme = opts.dual_scheme
     if scheme not in config.DUAL_SCHEMES:
-        raise BurnError(f"[dual-entry] 未知双入口制式: {scheme!r} "
-                        f"(可选 {config.DUAL_SCHEMES})")
+        raise BurnError(f"[dual-entry] 未知双入口制式: {scheme!r} (可选 {config.DUAL_SCHEMES})")
 
     pre_warnings: list[str] = []
     try:
         layout = disk_layout.inspect_layout(summary.disk_number)
+        p2_root: Path | None = None
         if layout.dual_scheme == scheme:
-            # 既有同制式双入口布局: 只刷新分区2, 绝不 clean, 无需再确认。
-            # 旧版 (0x17) MBR 盘顺带迁移: 类型字节改回 0x07, 否则挂不出卷根。
+            # 表签名与内容无关 (新旧布局都是"无盘符分区2"), 挂出来看
+            # 内容定去留: 有 keyinfo 且分区1尺寸达标且两分区均 NTFS =
+            # 本工具反转布局 → 复用, 绝不 clean; 分区1过小/不可读/非 NTFS
+            # → 重建扩容; 否则 (旧版布局分区2=.app / 异构多分区盘) → 全盘重建
             p2_root = disk_layout.refresh_partition2(
-                summary.disk_number, migrate_legacy_mbr=layout.legacy_hidden_p2)
-            pre_warnings.append("检测到既有双入口布局, 复用分区 (未清盘)")
-            if layout.legacy_hidden_p2:
-                pre_warnings.append("旧版 0x17 分区已迁移为 0x07 "
-                                    "(macOS 按标准 exFAT 挂载)")
-        else:
+                summary.disk_number, migrate_legacy_mbr=layout.legacy_hidden_p2
+            )
+            if (p2_root / KEYINFO_NAME).is_file():
+                if _p1_below_target(drive, p1_mib, pre_warnings) or _fs_not_ntfs(
+                    drive, "分区1", pre_warnings
+                ) or _fs_not_ntfs(p2_root, "分区2", pre_warnings):
+                    # 分区1过小/RAW 或任一分区非 NTFS (2026-09-28 换格式=换代,
+                    # 同"换名=换代"先例: exFAT 旧形态没有防误删 ACL) → 清盘重建
+                    p2_root = None
+                else:
+                    pre_warnings.append("检测到既有双入口布局, 复用分区 (未清盘)")
+                    if layout.legacy_hidden_p2:
+                        pre_warnings.append(
+                            "旧版 0x17 分区已迁移为 0x07 (macOS 按标准 exFAT 挂载)"
+                        )
+            else:
+                pre_warnings.append(
+                    "分区2内容非本工具加密链 (旧版布局/旧版文件名或异构), 将全盘重建为反转布局"
+                )
+                p2_root = None
+        if p2_root is None:
             if confirm_wipe is None or not confirm_wipe(summary):
                 raise BurnError("已取消: 重新分区将全盘清空, 需操作者确认")
-            p2_root = disk_layout.provision_dual_layout(summary.disk_number,
-                                                        letter, p2_mib,
-                                                        scheme=scheme)
+            p2_root = disk_layout.provision_dual_layout(
+                summary.disk_number, letter, p1_mib, scheme=scheme
+            )
     except disk_layout.DiskLayoutError as exc:
         raise BurnError(f"[dual-entry] {exc}") from exc
 
-    # 分区2空间预检 (复用布局才可能不足; 新建布局已按 .app 尺寸预留)
-    need = app_bytes + config.PART2_FREE_MARGIN_MIB * 1024 * 1024
-    free = shutil.disk_usage(p2_root).free
-    if free < need:
-        raise BurnError(
-            f"第2分区空间不足 (需 {need // (1024 * 1024)} MiB, "
-            f"剩 {free // (1024 * 1024)} MiB): 该盘分区2过小 —— 先在资源管理器"
-            "把盘格式化回单分区, 再用 --dual-entry 重烧初始化")
+    # 分区1空间预检 (仅复用路径: 新建布局已按阅览器尺寸定宽; 即将被
+    # _clear_own_artifacts 清掉的旧阅览器体积一并计入可用空间)
+    if any("复用分区" in w for w in pre_warnings):
+        reclaim = 0
+        for name in _ALL_VIEWER_DIR_NAMES:
+            d = drive / name
+            if d.exists():
+                reclaim += sum(f.stat().st_size for f in _iter_files(d))
+        need = viewers_bytes + config.VIEWER_PART_FREE_MARGIN_MIB * 1024 * 1024
+        free = shutil.disk_usage(drive).free + reclaim
+        if free < need:
+            raise BurnError(
+                f"分区1空间不足 (需 {need // (1024 * 1024)} MiB, "
+                f"剩 {free // (1024 * 1024)} MiB): 该盘阅览器分区过小 —— 先在"
+                "资源管理器把盘格式化回单分区, 再用 --dual-entry 重烧初始化"
+            )
 
     opts.dual_entry = True
-    opts.mac_partition_root = p2_root
+    opts.chain_partition_root = p2_root
     try:
         p2_letter = disk_layout._letter_of(p2_root)
     except disk_layout.DiskLayoutError as exc:
@@ -749,23 +1313,43 @@ def burn_dual(
     except BaseException:
         # 失败也归还临时盘符, 不给系统残留怪异挂载点; 原样重抛
         try:
-            disk_layout.finalize_partition2(summary.disk_number, p2_letter,
-                                            scheme=scheme)
+            disk_layout.finalize_partition2(summary.disk_number, p2_letter, scheme=scheme)
         except disk_layout.DiskLayoutError:
             pass  # 清理失败不叠加: 主错误优先; 残留盘符由下次 refresh 复用兜底
         raise
-    set_volume_label(p2_root, config.PART2_LABEL)  # 观感项, 失败不阻断
+    # 分区2卷标: v2.4.7 起点前缀 (.资料存储) 即 Mac 侧藏匿机制 —— 落空则
+    # macOS 桌面多出一个 Untitled 空卷, 不再是纯观感项; 先走完收尾再熔断,
+    # 保证失败路径不残留临时盘符。
+    p2_label_ok = set_volume_label(p2_root, config.PART2_LABEL)
+    # 分区1卷标: 双入口盘恒落 title (2026-09-23 真机: 未设卷标的 exFAT 在
+    # Mac Finder 显示 Untitled / Windows 显示 新加卷, 而收件人手册承诺桌面
+    # 出现 图书资料 一个卷名)。交付流程 --title 图书资料 即得正名;
+    # --set-label 从此只对单分区模式有开关意义。
+    if not set_volume_label(drive, opts.title[:32]):
+        report.warnings.append("分区1卷标未能设置 (Mac 侧将显示 Untitled)")
     try:
-        disk_layout.finalize_partition2(summary.disk_number, p2_letter,
-                                        scheme=scheme)
+        disk_layout.finalize_partition2(summary.disk_number, p2_letter, scheme=scheme)
     except disk_layout.DiskLayoutError as exc:
         report.warnings.append(f"[dual-entry] 分区2盘符未能隐藏: {exc}")
+    if not p2_label_ok:
+        raise BurnError(
+            f"分区2卷标未能设置为 {config.PART2_LABEL}: Mac 侧桌面将多出一个 "
+            "Untitled 空卷, 藏匿机制失效 —— 请重跑烧录 (复用路径会原位重写)"
+        )
     if scheme == config.DUAL_SCHEME_GPT:
-        report.warnings.append("分区2已设 GPT 无盘符属性 (写盘上, 换 Windows 机"
-                               "也不分配盘符); macOS 按标准 GPT+exFAT 挂载")
+        report.warnings.append(
+            "分区2 (加密链) 已设 GPT 无盘符属性 (写盘上, 换 "
+            "Windows 机也不分配盘符, 资源管理器不显示); "
+            "macOS 仍会按标准 GPT 挂载该卷 (2026-09-28 起 NTFS, "
+            "预期只读挂载, 收件机表现待真机核验; 卷标 "
+            f"{config.PART2_LABEL}, 内容为密文)"
+        )
     else:
-        report.warnings.append("分区2已摘除盘符 (MBR 快速验证制式): 仅烧录机上"
-                               "可靠隐藏, 其他 Windows 机首插可能自动补盘符")
+        report.warnings.append(
+            "分区2 (加密链) 已摘除盘符 (MBR 快速验证制式): "
+            "仅烧录机上可靠隐藏, 其他 Windows 机首插可能"
+            "自动补盘符"
+        )
     report.warnings.extend(pre_warnings)
     return report
 
@@ -825,8 +1409,8 @@ def _archive_code(path: Path | None, code: str, title: str, serial: int) -> Path
             os.chmod(extended_path(p), 0o600)
     except OSError as exc:
         raise BurnError(
-            f"解锁码归档失败: {exc}; 请立即手工记录本盘解锁码: "
-            f"{unlock_code.display(code)}") from exc
+            f"解锁码归档失败: {exc}; 请立即手工记录本盘解锁码: {unlock_code.display(code)}"
+        ) from exc
     return p
 
 

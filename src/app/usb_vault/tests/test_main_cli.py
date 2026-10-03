@@ -7,10 +7,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from src.app.usb_vault import config, main as cli
+from src.app.usb_vault import config, inspector, main as cli
 from src.app.usb_vault.disk_layout import DiskSummary
 
 
@@ -18,9 +19,11 @@ def test_burn_new_flags_parsed() -> None:
     args = cli.build_parser().parse_args([
         "burn", "--source", "S", "--drive", "E:",
         "--viewer-mac", "/x/图书阅览器.app", "--converter", "soffice",
+        "--viewer-mac-intel", "/x/vault_viewer_intel.app",
         "--av-cmd", "myav {path}", "--skip-scan",
     ])
     assert args.viewer_mac == "/x/图书阅览器.app"
+    assert args.viewer_mac_intel == "/x/vault_viewer_intel.app"
     assert args.converter == "soffice"
     assert args.av_cmd == "myav {path}"
     assert args.skip_scan is True
@@ -29,6 +32,7 @@ def test_burn_new_flags_parsed() -> None:
 def test_burn_defaults_unchanged() -> None:
     args = cli.build_parser().parse_args(["burn", "--source", "S", "--drive", "E:"])
     assert args.viewer_mac is None
+    assert args.viewer_mac_intel is None
     assert args.converter is None
     assert args.av_cmd is None
     assert args.skip_scan is False
@@ -173,3 +177,118 @@ def test_wipe_confirm_prompt_shows_disk_details(
     assert "磁盘 3" in out and "SanDisk Ultra" in out  # 磁盘号 + 型号
     assert "32GB" in out and "USB" in out  # 容量 + 总线
     assert "全盘清空" in out and "E" in out  # 后果 + 现有盘符
+
+
+# ---- heal / verify 分区2隐藏态 (2026-09-29 跨平台自愈) ----
+# macOS 改写 GPT 剥掉无盘符属性位 → 收件 Windows 给分区2补盘符; 烧录机
+# verify 报警 + heal 免重烧恢复。接线层测试, 磁盘动作在 test_disk_layout。
+
+class _FakeReport:
+    title = "测试资料"
+    results: list[Any] = []
+    all_ok = True
+
+
+def test_heal_flags_parsed() -> None:
+    args = cli.build_parser().parse_args(["heal", "--drive", "E:"])
+    assert args.drive == "E:"
+    assert args.func is cli.cmd_heal
+
+
+def test_cmd_heal_rejects_foreign_drive(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    args = cli.build_parser().parse_args(["heal", "--drive", str(tmp_path)])
+    with pytest.raises(SystemExit, match="不是资料盘"):
+        cli.cmd_heal(args)
+
+
+def test_cmd_heal_single_partition_needs_nothing(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    from src.app.usb_vault import disk_layout
+    from src.app.usb_vault.burner import _ALL_VIEWER_DIR_NAMES
+
+    (tmp_path / _ALL_VIEWER_DIR_NAMES[0]).mkdir()
+    monkeypatch.setattr(disk_layout, "require_admin", lambda: None)
+    monkeypatch.setattr(disk_layout, "_letter_of", lambda p: "E")
+    monkeypatch.setattr(disk_layout, "resolve_disk",
+                        lambda letter: _WIPE_SUMMARY)
+    monkeypatch.setattr(disk_layout, "partition2_state", lambda dn: None)
+    args = cli.build_parser().parse_args(["heal", "--drive", str(tmp_path)])
+    assert cli.cmd_heal(args) == 0
+    assert "单分区形态" in capsys.readouterr().out
+
+
+def test_cmd_heal_restores_hidden_partition2(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    from src.app.usb_vault import disk_layout
+    from src.app.usb_vault.burner import _ALL_VIEWER_DIR_NAMES
+
+    (tmp_path / _ALL_VIEWER_DIR_NAMES[0]).mkdir()
+    monkeypatch.setattr(disk_layout, "require_admin", lambda: None)
+    monkeypatch.setattr(disk_layout, "_letter_of", lambda p: "E")
+    monkeypatch.setattr(disk_layout, "resolve_disk",
+                        lambda letter: _WIPE_SUMMARY)
+    monkeypatch.setattr(disk_layout, "partition2_state",
+                        lambda dn: {"letters": ["K"], "is_gpt": True, "attr_ok": False})
+    healed: list[int] = []
+
+    def fake_heal(dn: int) -> list[str]:
+        healed.append(dn)
+        return ["K"]
+
+    monkeypatch.setattr(disk_layout, "heal_partition2_hidden", fake_heal)
+    args = cli.build_parser().parse_args(["heal", "--drive", str(tmp_path)])
+    assert cli.cmd_heal(args) == 0
+    assert healed == [3]  # 动的是 resolve_disk 定位到的磁盘号
+    out = capsys.readouterr().out
+    assert "分区2隐藏已恢复" in out and "K" in out
+
+
+def _fake_verify_env(monkeypatch: pytest.MonkeyPatch, p2_state: object) -> None:
+    """cmd_verify 接线环境: 哈希与 ACL 段全绿, 只留分区2态可变。"""
+    from src.app.usb_vault import disk_layout, ntfs_guard
+
+    monkeypatch.setattr(cli, "_load_seed_arg", lambda path: b"seed")
+    monkeypatch.setattr(inspector, "verify_drive",
+                        lambda drive, seed, unlock_code=None: _FakeReport())
+    monkeypatch.setattr(ntfs_guard, "is_ntfs", lambda root: False)
+    monkeypatch.setattr(disk_layout, "disk_number_of", lambda letter: 3)
+    monkeypatch.setattr(disk_layout, "partition2_state", lambda dn: p2_state)
+
+
+@pytest.mark.parametrize("p2_state, expect", [
+    ({"letters": [], "is_gpt": True, "attr_ok": True}, 0),   # 健康双分区
+    (None, 0),                                                # 单分区: 无可查
+])
+def test_cmd_verify_p2_healthy_or_absent(
+        monkeypatch: pytest.MonkeyPatch, p2_state: object, expect: int,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    _fake_verify_env(monkeypatch, p2_state)
+    args = cli.build_parser().parse_args(["verify", "--drive", "E:"])
+    assert cli.cmd_verify(args) == expect
+    out = capsys.readouterr().out
+    if p2_state is not None:
+        assert "分区2隐藏属性: 在位 ✔" in out
+
+
+def test_cmd_verify_p2_stripped_fails_with_heal_hint(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """macOS 剥属性后的现场: verify 必须报警退出非零, 并给出 heal 恢复指引。"""
+    _fake_verify_env(
+        monkeypatch, {"letters": ["K"], "is_gpt": True, "attr_ok": False})
+    args = cli.build_parser().parse_args(["verify", "--drive", "E:"])
+    assert cli.cmd_verify(args) == 1
+    out = capsys.readouterr().out
+    assert "分区2隐藏形态: 已失效" in out
+    assert "盘符 K" in out and "heal --drive" in out
+
+
+def test_cmd_verify_p2_mbr_legacy_warns_only(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    _fake_verify_env(
+        monkeypatch, {"letters": [], "is_gpt": False, "attr_ok": False})
+    args = cli.build_parser().parse_args(["verify", "--drive", "E:"])
+    assert cli.cmd_verify(args) == 0  # 旧 MBR 制式只降级告警, 不拦出仓
+    assert "旧 MBR 制式" in capsys.readouterr().out

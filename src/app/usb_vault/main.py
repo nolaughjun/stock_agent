@@ -4,6 +4,7 @@
     A. 完整仓库 —— 在**仓库根目录**运行:
     python -m src.app.usb_vault.main burn --source DIR --drive E: --title "项目资料" [--password]
     python -m src.app.usb_vault.main verify --drive E: [--code XXXX-XXXX]
+    python -m src.app.usb_vault.main heal --drive E:      # macOS用过的盘恢复分区2隐藏
     python -m src.app.usb_vault.main inspect --drive E:
     python -m src.app.usb_vault.main av-scan --target DIR
     python -m src.app.usb_vault.main build-viewer [--onedir默认] [--sign] [--vt-build]
@@ -81,8 +82,8 @@ def _install_standalone_imports() -> None:
     sys.modules["src.app"] = app_mod
 
     spec = importlib.util.spec_from_file_location(
-        "src.app.usb_vault", _PKG_DIR / "__init__.py",
-        submodule_search_locations=[str(_PKG_DIR)])
+        "src.app.usb_vault", _PKG_DIR / "__init__.py", submodule_search_locations=[str(_PKG_DIR)]
+    )
     if spec is None or spec.loader is None:  # 防御: __init__.py 丢失 = 拷贝残缺
         raise SystemExit(f"[usb_vault] 目录损坏: 找不到 {_PKG_DIR / '__init__.py'}")
     pkg = importlib.util.module_from_spec(spec)
@@ -144,6 +145,7 @@ except ModuleNotFoundError:  # 开发机依赖齐全; 仅现场首跑触发, 自
             BurnError,
             BurnOptions,
             burn,
+            burn_dual,
             seed_fingerprint,
         )
         from src.app.usb_vault.office_convert import ConvertError  # noqa: E402
@@ -174,8 +176,10 @@ def _ask_wipe_confirmation(summary: DiskSummary, *, assume_yes: bool) -> bool:
     一类"看起来像"的变体一律拒绝 —— 这是全盘清空前的最后一道闸。
     """
     print("即将重新分区, 全盘清空!")
-    print(f"  磁盘 {summary.disk_number}: {summary.model} "
-          f"({summary.size_bytes / 1024 ** 3:.0f}GB, {summary.bus_type})")
+    print(
+        f"  磁盘 {summary.disk_number}: {summary.model} "
+        f"({summary.size_bytes / 1024**3:.0f}GB, {summary.bus_type})"
+    )
     print(f"  现有盘符: {', '.join(summary.letters) or '无'} —— 该盘全部数据将被删除")
     if assume_yes:
         print("  (--yes 已豁免交互确认)")
@@ -205,6 +209,8 @@ def cmd_burn(args: argparse.Namespace) -> int:
         convert_office=not args.no_convert,
         viewer_exe=Path(args.viewer_exe) if args.viewer_exe else None,
         viewer_mac=Path(args.viewer_mac) if args.viewer_mac else None,
+        viewer_mac_intel=Path(args.viewer_mac_intel) if args.viewer_mac_intel else None,
+        launcher_exe=Path(args.launcher_exe) if args.launcher_exe else None,
         converter=args.converter,
         av_cmd=args.av_cmd,
         skip_scan=args.skip_scan,
@@ -215,9 +221,13 @@ def cmd_burn(args: argparse.Namespace) -> int:
     )
     try:
         if args.dual_entry:
-            report = burn_dual(Path(args.source), Path(args.drive), seed, opts,
-                               confirm_wipe=lambda s: _ask_wipe_confirmation(
-                                   s, assume_yes=args.yes))
+            report = burn_dual(
+                Path(args.source),
+                Path(args.drive),
+                seed,
+                opts,
+                confirm_wipe=lambda s: _ask_wipe_confirmation(s, assume_yes=args.yes),
+            )
         else:
             report = burn(Path(args.source), Path(args.drive), seed, opts)
     except (BurnError, ConvertError) as exc:
@@ -235,24 +245,39 @@ def cmd_burn(args: argparse.Namespace) -> int:
     else:
         print("  ⚠ 未做烧录前病毒扫描 (--skip-scan 豁免, 自担风险)")
     print(f"  复检: {'全部通过' if report.verify_ok else '未通过!'}")
+    if report.deny_acl_applied:
+        print("  防误删 ACL: 已施加 (NTFS 两级拒删; 删除/改名/移动将被系统拒绝)")
     if report.viewer_exe_used:
         kind = "目录版" if report.viewer_exe_used.is_dir() else "单文件版"
-        if report.dual_entry:  # 分区1 上用点前缀名 (Mac Finder 不显示)
-            name = (config.VIEWER_WIN_DIR_NAME_DOTTED if kind == "目录版"
-                    else config.VIEWER_EXE_NAME_DOTTED)
+        if report.dual_entry:  # 分区1 上用书名前缀+（适配Windows系统）后缀名 (2026-09-23 三次定稿)
+            name = (
+                config.VIEWER_WIN_DIR_NAME_DUAL
+                if kind == "目录版"
+                else config.VIEWER_EXE_NAME_DUAL
+            )
         else:
             name = config.VIEWER_DIR_NAME if kind == "目录版" else config.VIEWER_EXE_NAME
-        print(f"  Windows 查看器: {name} ({kind}, 已写入分区1)")
+        inner = (
+            f", 双击入口 {config.VIEWER_INNER_EXE_NAME_DUAL} (书名引导壳)"
+            if report.dual_entry and kind == "目录版"
+            else ""
+        )
+        print(f"  Windows 查看器: {name} ({kind}, 已写入分区1{inner})")
     else:
         print("  ⚠ 未写入 Windows 查看器 (收件人将无法阅读!)")
     if report.viewer_mac_used:
         if report.dual_entry:
-            where = ("分区2, GPT 无盘符属性 —— 仅 macOS 侧可见"
-                     if opts.dual_scheme == config.DUAL_SCHEME_GPT
-                     else "分区2, 已摘盘符 (MBR 快速验证制式)")
+            mac_name = config.VIEWER_MAC_DIR_NAME_DUAL_APPLE
+            where = "分区1, 与 Windows 查看器同卷 (v2.4.0 反转布局)"
         else:
+            mac_name = config.VIEWER_MAC_DIR_NAME
             where = "已写入盘根"
-        print(f"  macOS 查看器: {config.VIEWER_MAC_DIR_NAME} ({where})")
+        print(f"  macOS 查看器 (Apple 芯片): {mac_name} ({where})")
+    if report.viewer_mac_intel_used:
+        print(
+            f"  macOS 查看器 (Intel): {config.VIEWER_MAC_DIR_NAME_DUAL_INTEL} "
+            "(分区1, 双架构交付 2026-10-02)"
+        )
     for w in report.warnings:
         print(f"  ⚠ {w}")
     if report.unlock_code:
@@ -276,11 +301,10 @@ def cmd_lock(args: argparse.Namespace) -> int:
         warnings, count = lock_drive(Path(args.drive))
     except BurnError as exc:
         sys.exit(f"[lock] {exc}")
-    print(f"✔ 已锁定 {count} 个文件: 只读属性"
-          + " (Windows 端; 密文载体同时隐藏)")
+    print(f"✔ 已锁定 {count} 个文件: 只读属性" + " (Windows 端; 密文载体同时隐藏)")
     for w in warnings:
         print(f"  ⚠ {w}")
-    print("  提示: 右键盘内文件 -> 属性, 应看到\"只读\"已勾选。")
+    print('  提示: 右键盘内文件 -> 属性, 应看到"只读"已勾选。')
     return 0
 
 
@@ -300,7 +324,86 @@ def cmd_verify(args: argparse.Namespace) -> int:
             bad += 1
             print(f"  ✘ {r.rel_path}: {r.error or '哈希不符'}")
     print("全部通过 ✔" if report.all_ok else f"{bad} 个文件未通过 ✘")
+    # NTFS 防误删在位检查 (2026-09-28): 哈希验完内容, 再回读 ACL 验"防误删
+    # 配方" (不信任何退出码); 非 NTFS 卷不适用 (旧 exFAT 形态, 换格式=换代)
+    if sys.platform == "win32":
+        from src.app.usb_vault import ntfs_guard
+        from src.app.usb_vault.burner import _ALL_EXE_NAMES, _ALL_VIEWER_DIR_NAMES
+
+        if ntfs_guard.is_ntfs(drive):
+            acl_problems = ntfs_guard.check_delete_denial(
+                drive,
+                dir_names=_ALL_VIEWER_DIR_NAMES,
+                file_names=(*_ALL_EXE_NAMES, config.KEYINFO_NAME, config.MANIFEST_NAME),
+            )
+            if acl_problems:
+                print("防误删 ACL 检查未通过 ✘")
+                for p in acl_problems:
+                    print(f"  ✘ {p}")
+                return 1
+            print("防误删 ACL: 齐全 ✔ (两级拒删在位)")
+        else:
+            print("  ⚠ 非 NTFS 卷: 防误删 ACL 不适用 (旧 exFAT 形态, 建议重烧换 NTFS)")
+    # 分区2隐藏态检查 (2026-09-29 跨平台自愈读端): macOS 改写 GPT 会剥掉微软
+    # 专属的无盘符属性位, 收件 Windows 下次插入就给分区2补盘符 —— 烧录机
+    # verify 即发现, 跑 heal 免重烧恢复。单分区形态无分区2, 自然跳过;
+    # Get-Partition 普通权限可读, verify 不因此需要管理员。
+    if sys.platform == "win32":
+        from src.app.usb_vault import disk_layout
+        from src.app.usb_vault.disk_layout import DiskLayoutError
+
+        try:
+            p2 = disk_layout.partition2_state(
+                disk_layout.disk_number_of(str(drive).rstrip(":\\")))
+        except DiskLayoutError as exc:
+            print(f"  ⚠ 分区2隐藏态读取失败: {exc}")
+            p2 = None
+        if p2 is not None:
+            if p2["is_gpt"] and p2["attr_ok"] and not p2["letters"]:
+                print("分区2隐藏属性: 在位 ✔ (无盘符)")
+            elif p2["is_gpt"]:
+                print("分区2隐藏形态: 已失效 ✘ (macOS 改写分区表剥掉了无盘符属性位)")
+                if p2["letters"]:
+                    print(f"  ✘ 分区2当前挂着盘符 {'/'.join(p2['letters'])}")
+                if not p2["attr_ok"]:
+                    print("  ✘ GPT 无盘符属性位丢失")
+                print("  → 免重烧恢复: python -m src.app.usb_vault.main heal --drive <分区1盘符>:")
+                return 1
+            else:
+                print("  ⚠ 分区2为旧 MBR 制式: 无盘符属性不适用 (建议重烧换代)")
     return 0 if report.all_ok else 1
+
+
+def cmd_heal(args: argparse.Namespace) -> int:
+    """恢复分区2隐藏形态 (2026-09-29 跨平台自愈): macOS 用过的双分区盘,
+    GPT 无盘符属性位被剥 / 盘符被补 —— 烧录机上免重烧恢复 (走磁盘动作,
+    须管理员)。单分区形态无分区2, 直接告知无需处理。"""
+    try:
+        from src.app.usb_vault import disk_layout  # noqa: E402
+        from src.app.usb_vault.burner import (  # noqa: E402
+            _ALL_EXE_NAMES,
+            _ALL_VIEWER_DIR_NAMES,
+        )
+        from src.app.usb_vault.disk_layout import DiskLayoutError, require_admin  # noqa: E402
+    except ModuleNotFoundError as exc:  # pragma: no cover
+        sys.exit(f"[usb_vault] {exc}\n{_import_error_hint(exc)}")
+    drive = Path(args.drive)
+    # 身份闸: heal 动的是"这块盘的分区2", 先确认给的是我们的资料盘分区1
+    if not any((drive / n).exists() for n in (*_ALL_EXE_NAMES, *_ALL_VIEWER_DIR_NAMES)):
+        sys.exit(f"[heal] 该盘不是资料盘 (未见阅览器产物): {drive}")
+    try:
+        require_admin()
+        summary = disk_layout.resolve_disk(disk_layout._letter_of(drive))
+        if disk_layout.partition2_state(summary.disk_number) is None:
+            print("该盘是单分区形态: 无分区2隐藏需要恢复")
+            return 0
+        removed = disk_layout.heal_partition2_hidden(summary.disk_number)
+    except DiskLayoutError as exc:
+        sys.exit(f"[heal] {exc}")
+    note = f", 摘掉盘符 {'/'.join(removed)}" if removed else ""
+    print(f"✔ 分区2隐藏已恢复 (无盘符属性位在位){note}")
+    print('  提示: 重跑 verify 应显示"分区2隐藏属性: 在位 ✔"')
+    return 0
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -319,8 +422,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     except volume_id.VolumeIdError as exc:
         print(f"卷序列号: 读取失败 — {exc}")
     try:
-        manifest, _ = inspector.open_manifest(Path(args.drive), seed,
-                                              unlock_code=args.code)
+        manifest, _ = inspector.open_manifest(Path(args.drive), seed, unlock_code=args.code)
     except inspector.InspectorError as exc:
         sys.exit(f"[inspect] {exc}")
     print(f"标题: {manifest.title}")
@@ -328,8 +430,11 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print(f"有效期: {manifest.expire or '永久'}")
     print(f"打开次数上限: {manifest.max_opens or '不限'}")
     av = manifest.av_scanned
-    print(f"烧录前扫描: {av['engine']} @ {av['time']}" if av
-          else "烧录前扫描: 无记录 (--skip-scan 豁免或旧版烧录)")
+    print(
+        f"烧录前扫描: {av['engine']} @ {av['time']}"
+        if av
+        else "烧录前扫描: 无记录 (--skip-scan 豁免或旧版烧录)"
+    )
     print(f"文件 ({len(manifest.files)}):")
     for f in manifest.files:
         origin = f" (源 {f.converted_from})" if f.converted_from else ""
@@ -383,20 +488,44 @@ def cmd_build_viewer(args: argparse.Namespace) -> int:
                     print("  若烧录机另有 SEED, 此构建解不开它烧的盘! 先把 seed.bin")
                     print(f"  拷到 {seed_path}, 两边 sha256 核对同值后再构建。")
                 seed = _load_seed_arg(args.seed)
-        artifact = build_viewer.build(Path(args.out), seed, onefile=args.onefile,
-                                      name=name)
+        artifact = build_viewer.build(Path(args.out), seed, onefile=args.onefile, name=name)
     except (SeedError, build_viewer.BuildError) as exc:
         sys.exit(f"[build-viewer] {exc}")
     print(f"✔ 查看器已构建: {artifact}")
     # 自证标记: 用户双机工作流靠 U盘来回拷代码, Mac 侧常是旧拷贝 ——
-    # 没这行 = 跑的是旧构建器, 产物必坏; 日期不到 2026-09-17 = 不含 mac
-    # 授权读 rdisk 加固 (挂载卷块节点 EBUSY → 收件人开门失败)
-    print("  构建器: 2026-09-17 rdisk 加固版")
+    # 没这行 = 跑的是旧构建器, 产物必坏; 日期不到 2026-09-29 六版 =
+    # 拍平后 .framework 仍是缺 Current/别名的版本化残架 (codesign
+    # "bundle format unrecognized … In subcomponent: …Python.framework"),
+    # 或直跑死于 ModuleNotFoundError: No module named '_struct' (四版及
+    # 更早删了 python3.14 目录链接, lib-dynload 扩展导入器寻不到址),
+    # 或公证 Invalid —— log 全指向 Contents/Resources/PIL/.dylibs 等
+    # Resources 侧代码镜像被拍成无主未签名拷贝 (五版及更早"照拷"规则),
+    # 或直跑开窗正常、输解锁码后崩 AttributeError: module 'hashlib' has
+    # no attribute 'scrypt' (六版及更早提升/拍平搬移没跟着改 rpath 算术,
+    # _hashlib 加载不起来 → hashlib 静默降级)
+    # (一版修带点名链接, 二版收口数据镜像, 三版修框架内别名拍平,
+    #  四版 .framework 扁平化, 五版 lib-dynload 提升顶层 + tcl/tk
+    #  指回 Resources 真树, 六版 Resources 代码镜像改删不拷,
+    #  七版 rpath 归一化 + 依赖自包含/scrypt 双不变量)
+    print("  构建器: 2026-09-29 拍平修正七版")
     print(f"  内嵌 SEED 指纹: {seed_fingerprint(seed)} (烧录端 burn 输出须同值)")
+    if sys.platform == "win32" and not args.onefile and not args.vt_build:
+        # v2.4.5: 目录版双入口需要书名引导壳 —— 单拷书名 exe 时的中文谢幕
+        # 文案靠它送达 (onedir 主 exe 单独拷走死在装载器层, Python 门禁跑不到)
+        try:
+            launcher = build_viewer.build_launcher(Path(args.out))
+        except build_viewer.BuildError as exc:
+            sys.exit(f"[build-viewer] {exc}")
+        print(f"✔ 书名引导壳已构建: {launcher}")
+        print("  (烧录时拷入双入口目录并改书名; onefile 版自包含, 无需引导壳)")
     if sys.platform == "darwin" and not args.vt_build:
         print("  传输到烧录机: cd dist && zip -r vault_viewer.app.zip vault_viewer.app")
         print("  (内部全 ASCII 文件名, 任何解压工具都安全)")
-        print(f"  烧录时会自动以中文名 {config.VIEWER_MAC_DIR_NAME} 写到盘上")
+        print(
+            f"  烧录时自动改中文名写盘 (单分区 {config.VIEWER_MAC_DIR_NAME} / "
+            f"双入口 {config.VIEWER_MAC_DIR_NAME_DUAL_APPLE}); Intel 版须先改名 "
+            f"{config.VIEWER_MAC_BUILD_NAME_INTEL}.app 再 zip (双架构详见签名公证操作方案)"
+        )
     if not args.vt_build and args.sign is not None:
         ok, note = build_viewer.sign_artifact(artifact, args.sign or None)
         if not ok:
@@ -438,32 +567,62 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--expire", default=None, help="有效期 YYYY-MM-DD")
     b.add_argument("--max-opens", type=int, default=None, help="打开次数上限 (软限制)")
     b.add_argument("--no-convert", action="store_true", help="不转 Office 为 PDF")
-    b.add_argument("--viewer-exe", default=None,
-                   help="指定 Windows 查看器 (exe=单文件 或 目录=onedir)")
-    b.add_argument("--viewer-mac", default=None, help="指定 macOS 查看器 .app 目录")
-    b.add_argument("--converter", default=None,
-                   choices=("win32com", "applescript", "soffice"),
-                   help="Office->PDF 转换后端 (默认按平台自动选)")
-    b.add_argument("--av-cmd", default=None,
-                   help="自定义病毒扫描引擎命令模板, {path} 为目标占位")
-    b.add_argument("--skip-scan", action="store_true",
-                   help="跳过烧录前病毒扫描 (fail-closed 的显式豁免, 自担风险)")
+    b.add_argument(
+        "--viewer-exe", default=None, help="指定 Windows 查看器 (exe=单文件 或 目录=onedir)"
+    )
+    b.add_argument("--viewer-mac", default=None, help="指定 macOS 查看器 .app 目录 (Apple 芯片版)")
+    b.add_argument(
+        "--viewer-mac-intel", default=None,
+        help="指定 Intel 版 macOS 查看器 .app 目录 (双入口双架构必传; "
+             "或把 vault_viewer_intel.app 放进 dist/)",
+    )
+    b.add_argument(
+        "--launcher-exe", default=None,
+        help="指定书名引导壳 exe (双入口目录版收件人双击的书名程序; "
+             "跨机烧录时从 Windows 构建机拷 dist/vault_launcher.exe)",
+    )
+    b.add_argument(
+        "--converter",
+        default=None,
+        choices=("win32com", "applescript", "soffice"),
+        help="Office->PDF 转换后端 (默认按平台自动选)",
+    )
+    b.add_argument("--av-cmd", default=None, help="自定义病毒扫描引擎命令模板, {path} 为目标占位")
+    b.add_argument(
+        "--skip-scan",
+        action="store_true",
+        help="跳过烧录前病毒扫描 (fail-closed 的显式豁免, 自担风险)",
+    )
     b.add_argument("--seed", default=None, help="指定 SEED 文件")
     b.add_argument("--set-label", action="store_true", help="把卷标设为标题")
-    b.add_argument("--password", action="store_true",
-                   help="密码模式: 每盘生成随机解锁码 (打印密封交甲方, 乙方归档; 合同⑤)")
-    b.add_argument("--code-archive", default=None, metavar="PATH",
-                   help=f"解锁码归档文件 (默认 {config.CODE_ARCHIVE_PATH})")
-    b.add_argument("--dual-entry", action="store_true",
-                   help="双分区模式: 分区2只放 Mac 查看器并隐藏盘符, "
-                        "需管理员终端; 首烧全盘清空, 交互确认")
-    b.add_argument("--dual-scheme", choices=config.DUAL_SCHEMES,
-                   default=config.DUAL_SCHEME_GPT, metavar="SCHEME",
-                   help="双分区制式: gpt (默认, 交付级 —— 无盘符属性写盘上, "
-                        "换 Windows 机也不分配盘符) / mbr (快速验证 —— 仅烧录机"
-                        "上可靠隐藏, 其他 Windows 机首插可能自动补盘符)")
-    b.add_argument("--yes", action="store_true",
-                   help="配合 --dual-entry: 跳过清盘的交互确认 (危险: 全盘清空)")
+    b.add_argument(
+        "--password",
+        action="store_true",
+        help="密码模式: 每盘生成随机解锁码 (打印密封交甲方, 乙方归档; 合同⑤)",
+    )
+    b.add_argument(
+        "--code-archive",
+        default=None,
+        metavar="PATH",
+        help=f"解锁码归档文件 (默认 {config.CODE_ARCHIVE_PATH})",
+    )
+    b.add_argument(
+        "--dual-entry",
+        action="store_true",
+        help="双分区模式: 分区2只放 Mac 查看器并隐藏盘符, 需管理员终端; 首烧全盘清空, 交互确认",
+    )
+    b.add_argument(
+        "--dual-scheme",
+        choices=config.DUAL_SCHEMES,
+        default=config.DUAL_SCHEME_GPT,
+        metavar="SCHEME",
+        help="双分区制式: gpt (默认, 交付级 —— 无盘符属性写盘上, "
+        "换 Windows 机也不分配盘符) / mbr (快速验证 —— 仅烧录机"
+        "上可靠隐藏, 其他 Windows 机首插可能自动补盘符)",
+    )
+    b.add_argument(
+        "--yes", action="store_true", help="配合 --dual-entry: 跳过清盘的交互确认 (危险: 全盘清空)"
+    )
     b.set_defaults(func=cmd_burn)
 
     lk = sub.add_parser("lock", help="对已烧录U盘补加/恢复 只读+隐藏 (免重烧)")
@@ -475,6 +634,11 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--seed", default=None)
     v.add_argument("--code", default=None, help="解锁码 (密码模式的盘)")
     v.set_defaults(func=cmd_verify)
+
+    h = sub.add_parser(
+        "heal", help="恢复分区2隐藏 (macOS 用过的盘, 免重烧; 须管理员)")
+    h.add_argument("--drive", required=True, help="分区1盘符, 如 E:")
+    h.set_defaults(func=cmd_heal)
 
     i = sub.add_parser("inspect", help="查看盘上清单")
     i.add_argument("--drive", required=True)
@@ -492,14 +656,23 @@ def build_parser() -> argparse.ArgumentParser:
     bv.add_argument("--out", default=str(config.MODULE_DIR / "dist"))
     bv.add_argument("--seed", default=None)
     bv.add_argument("--fresh-seed", action="store_true", help="同时轮换新 SEED")
-    bv.add_argument("--onefile", action="store_true",
-                    help="单文件 exe (仅 Windows; 启动慢且误报率高, 不建议)")
-    bv.add_argument("--name", default=None,
-                    help="产物名 (默认: Windows=图书阅览器, macOS=vault_viewer/ASCII名)")
-    bv.add_argument("--vt-build", action="store_true",
-                    help="假 SEED 自检构建, 仅用于提交杀毒厂商, 绝不烧盘")
-    bv.add_argument("--sign", default=None, nargs="?", const="", metavar="IDENTITY",
-                    help="构建后签名: Win=signtool (给 .pfx 或省略自动选); Mac=codesign (默认 ad-hoc)")
+    bv.add_argument(
+        "--onefile", action="store_true", help="单文件 exe (仅 Windows; 启动慢且误报率高, 不建议)"
+    )
+    bv.add_argument(
+        "--name", default=None, help="产物名 (默认: Windows=图书阅览器, macOS=vault_viewer/ASCII名)"
+    )
+    bv.add_argument(
+        "--vt-build", action="store_true", help="假 SEED 自检构建, 仅用于提交杀毒厂商, 绝不烧盘"
+    )
+    bv.add_argument(
+        "--sign",
+        default=None,
+        nargs="?",
+        const="",
+        metavar="IDENTITY",
+        help="构建后签名: Win=signtool (给 .pfx 或省略自动选); Mac=codesign (默认 ad-hoc)",
+    )
     bv.set_defaults(func=cmd_build_viewer)
 
     ns = sub.add_parser("new-seed", help="轮换 SEED")

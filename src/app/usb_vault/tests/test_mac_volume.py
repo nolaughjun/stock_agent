@@ -418,3 +418,265 @@ def test_admin_read_platform_guard(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(subprocess, "run", boom)
     assert mac_volume.admin_read_serial("E:", "pw") is None
+
+
+# ---------------------------------------------------------------------------
+# v2.4.8 外置介质判据 (拷离介质闸门, 2026-09-29): 拷到电脑的阅览器整目录
+# 副本即使原盘同机在场也谢幕 —— Mac 侧判据 = 自身卷挂在外置介质。
+# v2.4.9 (2026-09-30 真机事故) 改三级级联: macOS 26 的 NTFS 走 fskit 挂载,
+# 卷级 diskutil info --plist 可能缺 Internal 键, 旧单通道读不出即抛错,
+# fail-closed 把真棒错杀 (弹"脱离U盘介质")。级联顺序: 挂载点 plist
+# (Internal → DeviceLocation 同源旁证) → mount 反查切片节点 → 整盘节点。
+# ---------------------------------------------------------------------------
+
+
+def test_mount_point_of_walks_to_volumes_child() -> None:
+    p = (Path("/Volumes/图书资料/《欧阳竟无全集》《桂伯华全集》图书阅览器"
+             "（适配MAC系统）.app/Contents/MacOS/图书阅览器"))
+    assert mac_volume.mount_point_of(p) == Path("/Volumes/图书资料")
+
+
+def test_mount_point_of_desktop_returns_none() -> None:
+    """拷到内置盘 (桌面等) 的 .app: 上溯不到 /Volumes 挂载点。"""
+    p = Path("/Users/reader/Desktop/阅览器.app/Contents/MacOS/x")
+    assert mac_volume.mount_point_of(p) is None
+
+
+def test_is_on_external_media_platform_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非 darwin: 抛 VolumeIdError, 不碰子进程。"""
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def boom(*a: object, **k: object) -> None:
+        raise AssertionError("非 darwin 下不应启动任何子进程")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(VolumeIdError):
+        mac_volume.is_on_external_media("/Volumes/UDISK")
+
+
+def _fake_media_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mount_line: str = "",
+    plists: dict[str, tuple[dict[str, object], int]] | None = None,
+    fail_flags: tuple[str, ...] = (),
+) -> None:
+    """桩掉介质判据级联的两个子进程。
+
+    plists: diskutil 查询目标 (挂载点路径或 /dev/diskNsM) → (plist, 退出码);
+    未登记的目标一律 rc=1 (查询不通, 换下一通道)。mount_line 为空 =
+    mount 输出里没有该卷的行。fail_flags: 对这些写法 (-plist/--plist)
+    一律 rc=1 打用法说明 —— 模拟 2026-10-01 真机 (macOS 26 拒收 --plist)。
+    """
+    table = plists or {}
+    bad = set(fail_flags)
+
+    def fake_run(args: list[str], **kw: object) -> _FakeCompleted:
+        if args[0] == "mount":
+            return _FakeCompleted(0, mount_line.encode("utf-8"), b"")
+        assert args[:2] == ["diskutil", "info"]
+        flag, target = args[2], args[3]
+        assert flag in mac_volume._DISKUTIL_PLIST_FLAGS
+        if flag in bad:
+            return _FakeCompleted(1, b"", b"Usage: diskutil info[rmation] [-plist]")
+        info, rc = table.get(target, ({}, 1))
+        return _FakeCompleted(rc, plistlib.dumps(info), b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+
+def test_is_on_external_media_usb_stick_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真USB棒: 挂在 /Volumes 下且挂载点 plist Internal=false (通道 1 直接判)。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(monkeypatch, plists={
+        "/Volumes/图书资料": ({"Internal": False, "DeviceIdentifier": "disk4s1"}, 0)})
+    assert mac_volume.is_on_external_media("/Volumes/图书资料/x.app") is True
+
+
+def test_is_on_external_media_internal_volume_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """内置数据卷同样挂 /Volumes 下 (Catalina+ 数据卷): Internal 键在场即
+    权威判内置 —— 级联不许越过 Internal=true 另寻旁证翻案。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(monkeypatch, plists={
+        "/Volumes/Macintosh HD - 数据": ({"Internal": True, "DeviceIdentifier": "disk1s4"}, 0)})
+    assert mac_volume.is_on_external_media("/Volumes/Macintosh HD - 数据/x") is False
+
+
+def test_is_on_external_media_fskit_location_fallback_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-30 真机事故形态 (v2.4.9 修的正主): macOS 26 NTFS 走 fskit
+    挂载, 卷级 plist 缺 Internal 但有 DeviceLocation (与 Internal 同出
+    IOKit, 文本输出的 Device Location 行即由它渲染) —— 旁证判外置。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(monkeypatch, plists={
+        "/Volumes/图书资料": ({"DeviceIdentifier": "disk4s1", "DeviceLocation": "External"}, 0)})
+    assert mac_volume.is_on_external_media("/Volumes/图书资料/x.app") is True
+
+
+def test_is_on_external_media_cascade_to_whole_disk_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """卷级 plist 全键缺 (fskit 更极端形态) → mount 反查 /dev/disk4s1 问
+    切片 (也不通) → 归整盘 /dev/disk4: Internal=false 判外置。整盘信息
+    不经文件系统栈, fskit 卷缺失的键在这里仍在。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(
+        monkeypatch,
+        mount_line="/dev/disk4s1 on /Volumes/图书资料 "
+                   "(ntfs, local, nodev, nosuid, read-only, noowners, noatime, fskit)",
+        plists={
+            "/Volumes/图书资料": ({"DeviceIdentifier": "disk4s1"}, 0),
+            "/dev/disk4s1": ({}, 1),
+            "/dev/disk4": ({"Internal": False, "DeviceIdentifier": "disk4"}, 0),
+        })
+    assert mac_volume.is_on_external_media("/Volumes/图书资料/x.app") is True
+
+
+def test_is_on_external_media_cascade_internal_disk_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """级联读到的 Internal=true 同样权威: 内置卷键缺时逐通道下探, 切片
+    节点判内置 → False (级联不是"想方设法判外置")。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(
+        monkeypatch,
+        mount_line="/dev/disk1s4 on /Volumes/Macintosh HD - 数据 (apfs, local)",
+        plists={
+            "/Volumes/Macintosh HD - 数据": ({"DeviceIdentifier": "disk1s4"}, 0),
+            "/dev/disk1s4": ({"Internal": True, "DeviceIdentifier": "disk1s4"}, 0),
+        })
+    assert mac_volume.is_on_external_media("/Volumes/Macintosh HD - 数据/x") is False
+
+
+def test_is_on_external_media_all_channels_dead_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """全通道灭 (diskutil 全线不通): 抛 VolumeIdError 且带各通道原因,
+    现场截图即自诊断 —— 调用方 fail-closed 谢幕, 不猜。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(
+        monkeypatch,
+        mount_line="/dev/disk4s1 on /Volumes/UDISK (exfat, local)",
+        plists={"/dev/disk4s1": ({}, 1), "/dev/disk4": ({}, 1)})
+    with pytest.raises(VolumeIdError, match="退出码 1"):
+        mac_volume.is_on_external_media("/Volumes/UDISK/x")
+
+
+def test_is_on_external_media_no_device_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """卷级判不出且 mount 输出无该卷行 (被拔出/换挂载名): 通道 2/3 无从
+    起步, 抛错带原因。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(monkeypatch, plists={
+        "/Volumes/UDISK": ({"DeviceIdentifier": "disk2s1"}, 0)})
+    with pytest.raises(VolumeIdError, match="无法定位U盘设备节点"):
+        mac_volume.is_on_external_media("/Volumes/UDISK/x")
+
+
+# ---------------------------------------------------------------------------
+# v2.4.10 (2026-10-01 真机): macOS 26 的 diskutil 拒收双横线 --plist 写法
+# (任何目标一律 rc=1 打用法说明, 用法自述即单横线 [-plist]) —— v2.4.9 级联
+# 三通道共用该写法 = 公共单点故障全灭。探测统一改 _diskutil_plist 双写法。
+# ---------------------------------------------------------------------------
+
+
+def test_diskutil_plist_macos26_double_dash_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真机形态: --plist 只打用法, -plist 正常 —— 单横线优先, 零重试直达,
+    判据照常出结论。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    tried: list[str] = []
+
+    def fake_run(args: list[str], **kw: object) -> _FakeCompleted:
+        assert args[:2] == ["diskutil", "info"]
+        if args[2] == "--plist":
+            return _FakeCompleted(1, b"", b"Usage: diskutil info[rmation] [-plist]")
+        tried.append(args[2])
+        return _FakeCompleted(0, plistlib.dumps({"Internal": False}), b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert mac_volume.is_on_external_media("/Volumes/图书资料/x.app") is True
+    assert tried == ["-plist"]
+
+
+def test_diskutil_plist_flag_fallback_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """反形态 (假想只认双横线的机型): -plist rc=1 自动补试 --plist, 判据
+    仍可达 —— 双写法探测两个方向都兜住。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    tried: list[str] = []
+
+    def fake_run(args: list[str], **kw: object) -> _FakeCompleted:
+        assert args[:2] == ["diskutil", "info"]
+        tried.append(args[2])
+        if args[2] == "-plist":
+            return _FakeCompleted(1, b"", b"Usage: diskutil info[rmation] [-plist]")
+        return _FakeCompleted(0, plistlib.dumps({"Internal": False}), b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert mac_volume.is_on_external_media("/Volumes/图书资料/x.app") is True
+    assert tried == ["-plist", "--plist"]
+
+
+def test_diskutil_plist_both_flags_dead_reports_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两种写法都不通: 失败原因须同时带两次尝试 (现场截图即自诊断)。"""
+    def fake_run(args: list[str], **kw: object) -> _FakeCompleted:
+        assert args[:2] == ["diskutil", "info"]
+        return _FakeCompleted(1, b"", b"boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    info, why = mac_volume._diskutil_plist("/dev/disk4")
+    assert info is None
+    assert "-plist: 退出码 1" in why
+    assert "--plist: 退出码 1" in why
+
+
+def test_is_on_external_media_macos26_incident_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真机全形态复盘: --plist 全拒 + 卷级 plist 键缺 (fskit) —— 单横线
+    探测 + 级联双保险叠加, 走到整盘 Internal 判外置。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_media_probe(
+        monkeypatch,
+        mount_line="/dev/disk4s1 on /Volumes/图书资料 "
+                   "(ntfs, local, nodev, nosuid, read-only, noowners, noatime, fskit)",
+        fail_flags=("--plist",),
+        plists={
+            "/Volumes/图书资料": ({"DeviceIdentifier": "disk4s1"}, 0),
+            "/dev/disk4s1": ({"DeviceIdentifier": "disk4s1",
+                              "DeviceLocation": "External"}, 0),
+            "/dev/disk4": ({"Internal": False, "DeviceIdentifier": "disk4"}, 0),
+        })
+    assert mac_volume.is_on_external_media("/Volumes/图书资料/x.app") is True
+
+
+def test_diskutil_volume_uuid_double_dash_machine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一台 macOS 26 上免特权 UUID 通道也复活 (v2.4.10 前该通道被
+    --plist 写法闷死, 只剩管理员授权框一条路)。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def fake_run(args: list[str], **kw: object) -> _FakeCompleted:
+        assert args[:2] == ["diskutil", "info"]
+        if args[2] == "--plist":
+            return _FakeCompleted(1, b"", b"Usage: diskutil info[rmation] [-plist]")
+        return _FakeCompleted(0, plistlib.dumps({"VolumeUUID": "40E8-75AA"}), b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    uuid, note = mac_volume._diskutil_volume_uuid(Path("/Volumes/UDISK"))
+    assert uuid == "40E8-75AA"
+    assert note == ""

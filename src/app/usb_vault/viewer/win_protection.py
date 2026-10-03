@@ -12,6 +12,20 @@ WDA_NONE = 0x0
 WDA_MONITOR = 0x1  # 仅显示器可见: PrintWindow/BitBlt 截不到 (Win7+)
 WDA_EXCLUDEFROMCAPTURE = 0x11  # 完全排除出捕获 (Win10 2004+)
 
+GA_ROOT = 2
+
+
+def _root_hwnd(hwnd: int) -> int:
+    """取 hwnd 所属的顶层窗口 HWND。
+
+    Tk 的 winfo_id() 在 Windows 上返回内层子 HWND, 而 display affinity
+    只对顶层窗口有意义 —— 对子窗口调用 SetWindowDisplayAffinity 直接
+    失败。v2.3.3 及之前一直把子 HWND 传进去 (微信截图/FSCapture 实测
+    穿透的根因, 2026-09-20 探针定案: winfo_id≠GA_ROOT, 调用返回 0)。
+    """
+    root = ctypes.windll.user32.GetAncestor(ctypes.c_void_p(hwnd), GA_ROOT)
+    return root or hwnd
+
 
 def set_dpi_awareness() -> None:
     """高 DPI 下文字不发糊; 必须在创建 Tk 根窗口之前调用。"""
@@ -29,16 +43,23 @@ def set_dpi_awareness() -> None:
 
 
 def apply_window_protection(hwnd: int) -> bool:
-    """把窗口标记为"排除出截屏"; 老系统降级 WDA_MONITOR, 再失败返回 False。"""
+    """把窗口标记为"排除出截屏"; 老系统降级 WDA_MONITOR, 再失败返回 False。
+
+    v2.3.3 及之前失败被调用方静默吞掉, 防护从未生效也无人知晓 (2026-09-20
+    收件人真机实测曝光)。现在失败必打 stderr 一行, 终端/开发侧可见。
+    """
     if sys.platform != "win32" or not hwnd:
         return False
+    target = _root_hwnd(hwnd)
     for value in (WDA_EXCLUDEFROMCAPTURE, WDA_MONITOR):
         try:
             if ctypes.windll.user32.SetWindowDisplayAffinity(
-                    ctypes.c_void_p(hwnd), value):
+                    ctypes.c_void_p(target), value):
                 return True
         except Exception:  # noqa: BLE001
             continue
+    print(f"[usb_vault] 防截屏设置失败 (顶层 hwnd={target}), "
+          "本窗口将被截图工具拍到", file=sys.stderr)
     return False
 
 
